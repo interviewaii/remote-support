@@ -4,19 +4,19 @@ if (require('electron-squirrel-startup')) {
 
 const { app, BrowserWindow, shell, ipcMain } = require('electron');
 const { createWindow, updateGlobalShortcuts } = require('./utils/window');
-const { setupGeminiIpcHandlers, stopMacOSAudioCapture, sendToRenderer } = require('./utils/gemini');
+const { setupOpenAIIpcHandlers, stopMacOSAudioCapture, sendToRenderer } = require('./utils/openai');
 
-const geminiSessionRef = { current: null };
+const openaiSessionRef = { current: null };
 let mainWindow = null;
 
 function createMainWindow() {
-    mainWindow = createWindow(sendToRenderer, geminiSessionRef);
+    mainWindow = createWindow(sendToRenderer, openaiSessionRef);
     return mainWindow;
 }
 
 app.whenReady().then(() => {
     createMainWindow();
-    setupGeminiIpcHandlers(geminiSessionRef);
+    setupOpenAIIpcHandlers(openaiSessionRef);
     setupGeneralIpcHandlers();
 });
 
@@ -61,7 +61,7 @@ function setupGeneralIpcHandlers() {
 
     ipcMain.on('update-keybinds', (event, newKeybinds) => {
         if (mainWindow) {
-            updateGlobalShortcuts(newKeybinds, mainWindow, sendToRenderer, geminiSessionRef);
+            updateGlobalShortcuts(newKeybinds, mainWindow, sendToRenderer, openaiSessionRef);
         }
     });
 
@@ -79,6 +79,17 @@ function setupGeneralIpcHandlers() {
         } catch (error) {
             console.error('Error updating content protection:', error);
             return { success: false, error: error.message };
+        }
+    });
+
+    ipcMain.handle('get-machine-id', async () => {
+        try {
+            const { machineIdSync } = require('node-machine-id');
+            const machineId = machineIdSync();
+            return machineId;
+        } catch (error) {
+            console.error('Error getting machine ID:', error);
+            return null;
         }
     });
 }

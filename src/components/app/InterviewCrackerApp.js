@@ -7,6 +7,9 @@ import { HistoryView } from '../views/HistoryView.js';
 import { AssistantView } from '../views/AssistantView.js';
 import { OnboardingView } from '../views/OnboardingView.js';
 import { AdvancedView } from '../views/AdvancedView.js';
+import { PaymentAlert } from '../views/PaymentAlert.js';
+import { isActivationValid, activateWithDeviceLock } from '../../utils/deviceId.js';
+import { isLicenseValid, activateLicense, canStartInterview, canGetResponse, trackInterviewStart, trackResponse, getLicenseInfo } from '../../utils/licenseManager.js';
 
 export class InterviewCrackerApp extends LitElement {
     static styles = css`
@@ -21,6 +24,11 @@ export class InterviewCrackerApp extends LitElement {
             padding: 0px;
             cursor: default;
             user-select: none;
+        }
+
+        input, textarea {
+            user-select: text !important;
+            cursor: text !important;
         }
 
         :host {
@@ -179,6 +187,7 @@ export class InterviewCrackerApp extends LitElement {
         layoutMode: { type: String },
         advancedMode: { type: Boolean },
         isDarkMode: { type: Boolean },
+        showPaymentAlert: { type: Boolean },
         _viewInstances: { type: Object, state: true },
         _isClickThrough: { state: true },
     };
@@ -194,7 +203,7 @@ export class InterviewCrackerApp extends LitElement {
         this.sessionActive = false;
         this.selectedProfile = localStorage.getItem('selectedProfile') || 'interview';
         this.selectedLanguage = localStorage.getItem('selectedLanguage') || 'en-US';
-        this.selectedScreenshotInterval = localStorage.getItem('selectedScreenshotInterval') || '5';
+        this.selectedScreenshotInterval = localStorage.getItem('selectedScreenshotInterval') || 'manual';
         this.selectedImageQuality = localStorage.getItem('selectedImageQuality') || 'medium';
         this.layoutMode = localStorage.getItem('layoutMode') || 'normal';
         this.advancedMode = localStorage.getItem('advancedMode') === 'true';
@@ -204,6 +213,9 @@ export class InterviewCrackerApp extends LitElement {
         this.isListening = false;
         this._viewInstances = new Map();
         this._isClickThrough = false;
+        this.responseCount = parseInt(localStorage.getItem('responseCount') || '0');
+        this.isActivated = false; // Will be verified async
+        this.showPaymentAlert = false;
 
         // Apply layout mode to document root
         this.updateLayoutMode();
@@ -215,8 +227,58 @@ export class InterviewCrackerApp extends LitElement {
         this.syncThemeState();
     }
 
+    async syncConfigWithFile() {
+        if (window.require) {
+            try {
+                const { ipcRenderer } = window.require('electron');
+                const config = await ipcRenderer.invoke('get-app-config');
+                console.log('Loaded config from file store:', config);
+
+                if (config) {
+                    let changed = false;
+                    // Restore key settings to localStorage if missing
+                    const settingsToSync = [
+                        'licenseKey', 'licenseTier', 'licenseExpiry', 'licenseActivatedDate',
+                        'isActivated', 'activationCode', 'onboardingCompleted', 'customPrompt'
+                    ];
+
+                    settingsToSync.forEach(key => {
+                        if (config[key] && !localStorage.getItem(key)) {
+                            localStorage.setItem(key, config[key]);
+                            changed = true;
+                        }
+                    });
+
+                    if (changed) {
+                        console.log('Restored settings from file store to localStorage');
+                        // Update app state based on restored settings
+                        if (localStorage.getItem('onboardingCompleted') === 'true' && this.currentView === 'onboarding') {
+                            this.currentView = 'main';
+                        }
+                    }
+                }
+            } catch (error) {
+                console.error('Failed to sync config with file store:', error);
+            }
+        }
+
+        // Verify device-locked activation after sync
+        await this.verifyActivation();
+    }
+
+    async verifyActivation() {
+        // Check both old activation and new license system
+        const oldActivation = await isActivationValid();
+        const licenseValid = isLicenseValid();
+        this.isActivated = oldActivation || licenseValid;
+        this.requestUpdate();
+    }
+
     connectedCallback() {
         super.connectedCallback();
+
+        // Sync state from file-based config
+        this.syncConfigWithFile();
 
         // Set up IPC listeners if needed
         if (window.require) {
@@ -272,6 +334,29 @@ export class InterviewCrackerApp extends LitElement {
         window.interviewAI.setStatus = window.interviewCracker.setStatus = (status) => {
             this.setStatus(status);
         };
+
+        // Add handleShortcut function
+        window.interviewAI.handleShortcut = window.interviewCracker.handleShortcut = (shortcutKey) => {
+            this.handleShortcut(shortcutKey);
+        };
+    }
+
+    handleShortcut(shortcutKey) {
+        console.log('Handling shortcut in app:', shortcutKey);
+        const normalizedKey = shortcutKey.toLowerCase();
+
+        // Check for Alt+S or Cmd+S or the old Ctrl+Enter for backward compatibility
+        if (normalizedKey === 'alt+s' || normalizedKey === 'cmd+s' || normalizedKey === 'ctrl+enter' || normalizedKey === 'cmd+enter') {
+            if (this.currentView === 'main') {
+                this.handleStart();
+            } else if (this.currentView === 'assistant') {
+                if (window.captureManualScreenshot) {
+                    window.captureManualScreenshot();
+                } else {
+                    console.error('window.captureManualScreenshot not available');
+                }
+            }
+        }
     }
 
     setStatus(text) {
@@ -279,16 +364,42 @@ export class InterviewCrackerApp extends LitElement {
     }
 
     setResponse(response) {
+        // Simple deduplication check
+        if (this.responses.length > 0 && this.responses[this.responses.length - 1] === response) {
+            console.log('Skipped duplicate response in UI');
+            return;
+        }
+
+        // Only check license limits if user is already activated
+        if (this.isActivated) {
+            const responseCheck = canGetResponse();
+            if (!responseCheck.allowed) {
+                this.setStatus(responseCheck.reason);
+                alert(`⚠️ Limit Reached\n\n${responseCheck.reason}\n\nPlease upgrade your plan or wait until tomorrow.`);
+                return;
+            }
+        }
+
         this.responses.push(response);
+
+        // Track response for license limits (only if activated)
+        if (this.isActivated) {
+            trackResponse();
+        }
+
+        // Increment response count and save to localStorage
+        this.responseCount++;
+        localStorage.setItem('responseCount', this.responseCount.toString());
+
+        // Check for payment alert if not activated
+        if (!this.isActivated && this.responseCount >= 300) {
+            // Show in-app payment alert
+            this.showPaymentAlert = true;
+        }
 
         // If user is viewing the latest response (or no responses yet), auto-navigate to new response
         if (this.currentResponseIndex === this.responses.length - 2 || this.currentResponseIndex === -1) {
             this.currentResponseIndex = this.responses.length - 1;
-        }
-
-        // Hide loading indicator when response is received
-        if (window.setScreenshotProcessing) {
-            window.setScreenshotProcessing(false);
         }
 
         this.requestUpdate();
@@ -321,32 +432,20 @@ export class InterviewCrackerApp extends LitElement {
     }
 
     async handleUpgradeClick() {
-        // UPI deeplink for payment
-        const upiDeeplink = 'upi://pay?pa=9420700711@ybl&pn=interview-ai&am=10&tn=software%20buy&cu=INR';
+        // Redirect to Microsoft Store
+        const storeUrl = 'https://apps.microsoft.com/store/detail/interview-ai';
 
-        // Show payment confirmation dialog
-        const confirmed = confirm(
-            'Upgrade to InterviewAI Pro\n\n' +
-            '📱 UPI ID: 9420700711@ybl\n' +
-            '📝 Note: software buy\n\n' +
-            'Click OK to open UPI payment app\n' +
-            'Or pay manually and contact us for activation.'
-        );
-
-        if (confirmed) {
-            try {
-                if (window.require) {
-                    const { ipcRenderer } = window.require('electron');
-                    await ipcRenderer.invoke('open-external', upiDeeplink);
-                } else {
-                    // Fallback for web environment
-                    window.open(upiDeeplink, '_blank');
-                }
-            } catch (error) {
-                console.error('Failed to open UPI payment:', error);
-                // Fallback: show payment info
-                alert('UPI Payment\n\nUPI ID: 9420700711@ybl\nAmount: ₹10\nNote: software buy\n\nPlease pay using any UPI app and contact us for activation.');
+        try {
+            if (window.require) {
+                const { ipcRenderer } = window.require('electron');
+                await ipcRenderer.invoke('open-external', storeUrl);
+            } else {
+                // Fallback for web environment
+                window.open(storeUrl, '_blank');
             }
+        } catch (error) {
+            console.error('Failed to open store URL:', error);
+            alert(`Please visit the Microsoft Store to upgrade:\n${storeUrl}`);
         }
     }
 
@@ -421,11 +520,31 @@ export class InterviewCrackerApp extends LitElement {
 
     // Main view event handlers
     async handleStart() {
+        // Enforce license check - No free trial allowed
+        if (!this.isActivated) {
+            this.showPaymentAlert = true;
+            this.requestUpdate();
+            return;
+        }
+
+        // Check license limits
+        const interviewCheck = canStartInterview();
+        if (!interviewCheck.allowed) {
+            alert(interviewCheck.reason);
+            return;
+        }
+
         if (window.interviewAI) {
             await window.interviewAI.initializeGemini(this.selectedProfile, this.selectedLanguage);
             // Pass the screenshot interval as string (including 'manual' option)
             window.interviewAI.startCapture(this.selectedScreenshotInterval, this.selectedImageQuality);
         }
+
+        // Track interview start for license limits (only if activated)
+        if (this.isActivated) {
+            trackInterviewStart();
+        }
+
         this.responses = [];
         this.currentResponseIndex = -1;
         this.isListening = true;
@@ -494,6 +613,39 @@ export class InterviewCrackerApp extends LitElement {
         this.currentResponseIndex = e.detail.index;
     }
 
+    handleActivateLicenseClick() {
+        this.currentView = 'payment';
+        this.requestUpdate();
+    }
+
+    async handleChatClick() {
+        // Enforce license check
+        if (!this.isActivated) {
+            this.showPaymentAlert = true;
+            this.requestUpdate();
+            return;
+        }
+
+        // Initialize Gemini if needed
+        if (window.interviewAI) {
+            await window.interviewAI.initializeGemini(this.selectedProfile, this.selectedLanguage);
+        }
+
+        this.currentView = 'assistant';
+
+        // Add a welcome message if chat is empty
+        if (!this.responses || this.responses.length === 0) {
+            this.responses = [{
+                text: "Hello! I'm your AI assistant. How can I help you today?",
+                sender: 'ai',
+                timestamp: new Date().toLocaleTimeString()
+            }];
+            this.currentResponseIndex = 0;
+        }
+
+        this.requestUpdate();
+    }
+
     // Onboarding event handlers
     handleOnboardingComplete() {
         this.currentView = 'main';
@@ -557,6 +709,8 @@ export class InterviewCrackerApp extends LitElement {
                         .onStart=${() => this.handleStart()}
                         .onAPIKeyHelp=${() => this.handleAPIKeyHelp()}
                         .onLayoutModeChange=${layoutMode => this.handleLayoutModeChange(layoutMode)}
+                        .onActivateLicense=${() => this.handleActivateLicenseClick()}
+                        .onChat=${() => this.handleChatClick()}
                     ></main-view>
                 `;
 
@@ -598,6 +752,15 @@ export class InterviewCrackerApp extends LitElement {
                     ></assistant-view>
                 `;
 
+            case 'payment':
+                return html`
+                    <payment-alert
+                        .onClose=${() => this.handleBackClick()}
+                        .onActivate=${(code) => this.handleActivationSubmit(code)}
+                        .onPayNow=${() => this.handlePayNow()}
+                    ></payment-alert>
+                `;
+
             default:
                 return html`<div>Unknown view: ${this.currentView}</div>`;
         }
@@ -634,6 +797,15 @@ export class InterviewCrackerApp extends LitElement {
                         <div class="view-container">${this.renderCurrentView()}</div>
                     </div>
                 </div>
+                ${this.showPaymentAlert ? html`
+                    <div style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; z-index: 10000;">
+                        <payment-alert
+                            .onClose=${() => { this.showPaymentAlert = false; this.requestUpdate(); }}
+                            .onActivate=${(code) => this.handleActivationSubmit(code)}
+                            .onPayNow=${() => this.handlePayNow()}
+                        ></payment-alert>
+                    </div>
+                ` : ''}
             </div>
         `;
     }
@@ -730,6 +902,79 @@ export class InterviewCrackerApp extends LitElement {
             }
         }
 
+        this.requestUpdate();
+    }
+
+    handlePaymentAlertClose() {
+        this.showPaymentAlert = false;
+        this.requestUpdate();
+    }
+
+    async handleActivationSubmit(code) {
+        try {
+            // Try new license system first
+            const deviceId = await (async () => {
+                if (window.require) {
+                    const { ipcRenderer } = window.require('electron');
+                    return await ipcRenderer.invoke('get-machine-id');
+                }
+                return localStorage.getItem('deviceId') || 'browser-fallback';
+            })();
+
+            const licenseResult = await activateLicense(code, deviceId);
+            if (licenseResult.success) {
+                this.isActivated = true;
+                this.showPaymentAlert = false;
+
+                // Switch to chat view and show welcome message
+                this.currentView = 'assistant';
+                this.responses = [{
+                    text: "🎉 License activated successfully! How can I help you today?",
+                    sender: 'ai',
+                    timestamp: new Date().toLocaleTimeString()
+                }];
+                this.currentResponseIndex = 0;
+
+                // Initialize Gemini if needed
+                if (window.interviewAI) {
+                    await window.interviewAI.initializeGemini(this.selectedProfile, this.selectedLanguage);
+                }
+
+                this.requestUpdate();
+
+                // Show upgrade message if applicable
+                if (licenseResult.isUpgrade) {
+                    alert(`✓ License upgraded successfully!\n\nPrevious: ${licenseResult.previousTier}\nNew: ${licenseResult.tier}\n\nYour new plan is now active!`);
+                } else {
+                    alert(`✓ License activated successfully!\n\nPlan: ${licenseResult.tier}\nDevice ID: ${licenseResult.deviceId}`);
+                }
+                console.log('License activated:', licenseResult.tier);
+                return;
+            } else {
+                // Show error message in the payment alert
+                const paymentAlert = this.shadowRoot.querySelector('payment-alert');
+                if (paymentAlert) {
+                    paymentAlert.errorMessage = licenseResult.reason || 'Invalid activation code. Please try again.';
+                    paymentAlert.successMessage = '';
+                    paymentAlert.requestUpdate();
+                }
+            }
+
+            // Fallback to old activation system
+            const result = await activateWithDeviceLock(code);
+            if (result.success) {
+                this.isActivated = true;
+                this.showPaymentAlert = false;
+                this.requestUpdate();
+                console.log('Activated on device:', result.deviceId);
+            }
+        } catch (error) {
+            console.error('Activation failed:', error);
+        }
+    }
+
+    async handlePayNow() {
+        this.showPaymentAlert = true;
         this.requestUpdate();
     }
 }

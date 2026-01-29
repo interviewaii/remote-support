@@ -160,6 +160,7 @@ async function attemptReconnection() {
         const session = await initializeGeminiSession(
             lastSessionParams.apiKey,
             lastSessionParams.customPrompt,
+            lastSessionParams.resumeContext,
             lastSessionParams.profile,
             lastSessionParams.language,
             true // isReconnection flag
@@ -189,7 +190,7 @@ async function attemptReconnection() {
     }
 }
 
-async function initializeGeminiSession(apiKey, customPrompt = '', profile = 'interview', language = 'en-US', isReconnection = false) {
+async function initializeGeminiSession(apiKey, customPrompt = '', resumeContext = '', profile = 'interview', language = 'en-US', isReconnection = false) {
     if (isInitializingSession) {
         console.log('Session initialization already in progress');
         return false;
@@ -203,6 +204,7 @@ async function initializeGeminiSession(apiKey, customPrompt = '', profile = 'int
         lastSessionParams = {
             apiKey,
             customPrompt,
+            resumeContext,
             profile,
             language,
         };
@@ -218,7 +220,7 @@ async function initializeGeminiSession(apiKey, customPrompt = '', profile = 'int
     const enabledTools = await getEnabledTools();
     const googleSearchEnabled = enabledTools.some(tool => tool.googleSearch);
 
-    const systemPrompt = getSystemPrompt(profile, customPrompt, googleSearchEnabled);
+    const systemPrompt = getSystemPrompt(profile, customPrompt, resumeContext, googleSearchEnabled);
 
     // Initialize new conversation session (only if not reconnecting)
     if (!isReconnection) {
@@ -226,14 +228,28 @@ async function initializeGeminiSession(apiKey, customPrompt = '', profile = 'int
     }
 
     try {
+        console.log('Initializing Gemini session with model: gemini-2.0-flash-exp');
+        console.log('API Key (masked):', apiKey ? `${apiKey.substring(0, 4)}...${apiKey.substring(apiKey.length - 4)}` : 'undefined');
+        console.log('System Prompt Length:', systemPrompt ? systemPrompt.length : 0);
+        console.log('Resume Context Length:', resumeContext ? resumeContext.length : 0);
+
+        if (!client.live) {
+            console.error('client.live is undefined. Check @google/genai version.');
+            if (client.aio && client.aio.live) {
+                console.log('Found client.aio.live, using that instead.');
+                // Adjust if necessary, but for now just log it.
+            }
+        }
+
         const session = await client.live.connect({
-            model: 'gemini-live-2.5-flash-preview',
+            model: 'gemini-2.0-flash-exp',
             callbacks: {
                 onopen: function () {
+                    console.log('Gemini Live session opened successfully');
                     sendToRenderer('update-status', 'Live session connected');
                 },
                 onmessage: function (message) {
-                    console.log('----------------', message);
+                    // console.log('----------------', JSON.stringify(message, null, 2));
 
                     // Handle transcription input
                     if (message.serverContent?.inputTranscription?.text) {
@@ -243,14 +259,17 @@ async function initializeGeminiSession(apiKey, customPrompt = '', profile = 'int
                     // Handle AI model response
                     if (message.serverContent?.modelTurn?.parts) {
                         for (const part of message.serverContent.modelTurn.parts) {
-                            console.log(part);
+                            // console.log(part);
                             if (part.text) {
                                 messageBuffer += part.text;
+                                // Optional: Send streaming updates if the frontend supports it
+                                // sendToRenderer('update-response-stream', part.text);
                             }
                         }
                     }
 
                     if (message.serverContent?.generationComplete) {
+                        console.log('Generation complete, sending response:', messageBuffer.substring(0, 50) + '...');
                         sendToRenderer('update-response', messageBuffer);
 
                         // Save conversation turn when we have both transcription and AI response
@@ -263,11 +282,24 @@ async function initializeGeminiSession(apiKey, customPrompt = '', profile = 'int
                     }
 
                     if (message.serverContent?.turnComplete) {
+                        console.log('Turn complete received.');
+                        // Fallback: If we have a buffer but didn't get generationComplete, send it now
+                        if (messageBuffer.length > 0) {
+                            console.log('Sending buffered response on turnComplete:', messageBuffer.substring(0, 50) + '...');
+                            sendToRenderer('update-response', messageBuffer);
+
+                            if (currentTranscription && messageBuffer) {
+                                saveConversationTurn(currentTranscription, messageBuffer);
+                                currentTranscription = '';
+                            }
+                            messageBuffer = '';
+                        }
                         sendToRenderer('update-status', 'Listening...');
                     }
                 },
                 onerror: function (e) {
-                    console.debug('Error:', e.message);
+                    console.error('Gemini Live session error:', e);
+                    console.error('Error message:', e.message);
 
                     // Check if the error is related to invalid API key
                     const isApiKeyError =
@@ -288,7 +320,7 @@ async function initializeGeminiSession(apiKey, customPrompt = '', profile = 'int
                     sendToRenderer('update-status', 'Error: ' + e.message);
                 },
                 onclose: function (e) {
-                    console.debug('Session closed:', e.reason);
+                    console.log('Gemini Live session closed:', e);
 
                     // Check if the session closed due to invalid API key
                     const isApiKeyError =
@@ -318,8 +350,8 @@ async function initializeGeminiSession(apiKey, customPrompt = '', profile = 'int
             config: {
                 responseModalities: ['TEXT'],
                 tools: enabledTools,
-                inputAudioTranscription: {},
-                contextWindowCompression: { slidingWindow: {} },
+                inputAudioTranscription: {}, // Ensure this is enabled for voice
+                // contextWindowCompression: { slidingWindow: {} }, // Commented out as it might cause issues with some models
                 speechConfig: { languageCode: language },
                 systemInstruction: {
                     parts: [{ text: systemPrompt }],
@@ -327,11 +359,15 @@ async function initializeGeminiSession(apiKey, customPrompt = '', profile = 'int
             },
         });
 
+        console.log('Gemini session object created:', !!session);
         isInitializingSession = false;
         sendToRenderer('session-initializing', false);
         return session;
     } catch (error) {
-        console.error('Failed to initialize Gemini session:', error);
+        console.error('Failed to initialize Gemini session (catch block):', error);
+        if (error.cause) {
+            console.error('Error cause:', error.cause);
+        }
         isInitializingSession = false;
         sendToRenderer('session-initializing', false);
         return null;
@@ -488,8 +524,8 @@ function setupGeminiIpcHandlers(geminiSessionRef) {
     // Store the geminiSessionRef globally for reconnection access
     global.geminiSessionRef = geminiSessionRef;
 
-    ipcMain.handle('initialize-gemini', async (event, apiKey, customPrompt, profile = 'interview', language = 'en-US') => {
-        const session = await initializeGeminiSession(apiKey, customPrompt, profile, language);
+    ipcMain.handle('initialize-gemini', async (event, apiKey, customPrompt, resumeContext, profile = 'interview', language = 'en-US') => {
+        const session = await initializeGeminiSession(apiKey, customPrompt, resumeContext, profile, language);
         if (session) {
             geminiSessionRef.current = session;
             return true;
@@ -498,7 +534,13 @@ function setupGeminiIpcHandlers(geminiSessionRef) {
     });
 
     ipcMain.handle('send-audio-content', async (event, { data, mimeType }) => {
-        if (!geminiSessionRef.current) return { success: false, error: 'No active Gemini session' };
+        if (!geminiSessionRef.current) {
+            // Only attempt reconnect if we have params, otherwise just fail to avoid spamming
+            if (lastSessionParams) {
+                await attemptReconnection();
+            }
+            if (!geminiSessionRef.current) return { success: false, error: 'No internet connection' };
+        }
         try {
             process.stdout.write('.');
             await geminiSessionRef.current.sendRealtimeInput({
@@ -512,7 +554,11 @@ function setupGeminiIpcHandlers(geminiSessionRef) {
     });
 
     ipcMain.handle('send-image-content', async (event, { data, debug }) => {
-        if (!geminiSessionRef.current) return { success: false, error: 'No active Gemini session' };
+        if (!geminiSessionRef.current) {
+            console.log('No active session for image, attempting reconnect...');
+            await attemptReconnection();
+            if (!geminiSessionRef.current) return { success: false, error: 'No internet connection' };
+        }
 
         try {
             if (!data || typeof data !== 'string') {
@@ -540,7 +586,13 @@ function setupGeminiIpcHandlers(geminiSessionRef) {
     });
 
     ipcMain.handle('send-text-message', async (event, text) => {
-        if (!geminiSessionRef.current) return { success: false, error: 'No active Gemini session' };
+        if (!geminiSessionRef.current) {
+            console.log('No active session found, attempting to reconnect...');
+            const reconnected = await attemptReconnection();
+            if (!reconnected || !geminiSessionRef.current) {
+                return { success: false, error: 'No internet connection' };
+            }
+        }
 
         try {
             if (!text || typeof text !== 'string' || text.trim().length === 0) {

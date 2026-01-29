@@ -418,11 +418,25 @@ export class OnboardingView extends LitElement {
         this.contextText = e.target.value;
     }
 
-    completeOnboarding() {
+    async completeOnboarding() {
         if (this.contextText.trim()) {
             localStorage.setItem('customPrompt', this.contextText.trim());
         }
         localStorage.setItem('onboardingCompleted', 'true');
+
+        // Sync to file-based config store
+        if (window.require) {
+            try {
+                const { ipcRenderer } = window.require('electron');
+                await ipcRenderer.invoke('set-app-config', {
+                    onboardingCompleted: 'true',
+                    customPrompt: this.contextText.trim() || localStorage.getItem('customPrompt')
+                });
+            } catch (error) {
+                console.error('Failed to sync onboarding to file store:', error);
+            }
+        }
+
         this.onComplete();
     }
 

@@ -1,0 +1,117 @@
+console.log('\n' + '='.repeat(70));
+console.log('  💳 OPENAI BILLING SETUP - QUICK GUIDE');
+console.log('='.repeat(70));
+console.log('');
+
+console.log('📍 YOU ARE HERE:');
+console.log('   https://platform.openai.com/account/billing');
+console.log('');
+
+console.log('='.repeat(70));
+console.log('  STEP 1: ADD PAYMENT METHOD');
+console.log('='.repeat(70));
+console.log('');
+console.log('  1. Look for "Payment methods" section');
+console.log('  2. Click "Add payment method" button');
+console.log('  3. Enter your card details:');
+console.log('     • Card number');
+console.log('     • Expiration date');
+console.log('     • CVV code');
+console.log('     • Billing address');
+console.log('  4. Click "Save" or "Add card"');
+console.log('');
+
+console.log('='.repeat(70));
+console.log('  STEP 2: SET USAGE LIMITS (IMPORTANT!)');
+console.log('='.repeat(70));
+console.log('');
+console.log('  Recommended limits:');
+console.log('  • Testing: $20/month');
+console.log('  • Production: $50-100/month');
+console.log('');
+console.log('  Enable notifications at:');
+console.log('  ✅ 75% of limit');
+console.log('  ✅ 90% of limit');
+console.log('  ✅ 100% of limit');
+console.log('');
+
+console.log('='.repeat(70));
+console.log('  STEP 3: WAIT & TEST');
+console.log('='.repeat(70));
+console.log('');
+console.log('  • Wait: 5-10 minutes for activation');
+console.log('  • Test: node test_api.js');
+console.log('  • Start app: npm start');
+console.log('');
+
+console.log('='.repeat(70));
+console.log('  🎯 IMPORTANT: YOU ALREADY HAVE YOUR API KEY!');
+console.log('='.repeat(70));
+console.log('');
+console.log('  Your current API key works for ALL models:');
+console.log('');
+console.log('  ✅ GPT-4o-mini (currently configured - fast & cheap)');
+console.log('  ✅ GPT-4o (better quality - available now!)');
+console.log('  ✅ GPT-4-turbo (balanced)');
+console.log('  ✅ Whisper (audio transcription)');
+console.log('  ✅ DALL-E (image generation)');
+console.log('');
+console.log('  You DON\'T need a separate API key for GPT-4o!');
+console.log('  The same key works for everything!');
+console.log('');
+
+console.log('='.repeat(70));
+console.log('  🚀 HOW TO USE GPT-4o (BETTER QUALITY)');
+console.log('='.repeat(70));
+console.log('');
+console.log('  Your app currently uses: gpt-4o-mini (fast & cheap)');
+console.log('');
+console.log('  To switch to GPT-4o (better quality):');
+console.log('');
+console.log('  Option 1: Edit src/utils/openai.js');
+console.log('    Find line ~257 and change:');
+console.log('    model: "gpt-4o-mini"  →  model: "gpt-4o"');
+console.log('');
+console.log('  Option 2: Keep both models');
+console.log('    Use gpt-4o-mini for quick responses');
+console.log('    Use gpt-4o for complex questions');
+console.log('');
+
+console.log('='.repeat(70));
+console.log('  💰 COST COMPARISON');
+console.log('='.repeat(70));
+console.log('');
+console.log('  1 hour interview costs:');
+console.log('  • gpt-4o-mini: ~$0.50 (⚡ fast, good quality)');
+console.log('  • gpt-4o: ~$3-5 (🎯 slower, excellent quality)');
+console.log('');
+console.log('  Recommendation: Start with gpt-4o-mini');
+console.log('');
+
+console.log('='.repeat(70));
+console.log('  📋 QUICK CHECKLIST');
+console.log('='.repeat(70));
+console.log('');
+console.log('  [ ] Add payment method on billing page');
+console.log('  [ ] Set monthly limit ($20 for testing)');
+console.log('  [ ] Enable email notifications');
+console.log('  [ ] Wait 5-10 minutes');
+console.log('  [ ] Run: node test_api.js');
+console.log('  [ ] Run: npm start');
+console.log('  [ ] (Optional) Switch to GPT-4o for better quality');
+console.log('');
+
+console.log('='.repeat(70));
+console.log('  ✨ SUMMARY');
+console.log('='.repeat(70));
+console.log('');
+console.log('  1. Your API key is READY (works for all models!)');
+console.log('  2. Just add billing on the page you\'re on now');
+console.log('  3. Wait 5-10 minutes');
+console.log('  4. Test and start using!');
+console.log('');
+console.log('  No need for a new API key or GPT-4o-specific key!');
+console.log('');
+
+console.log('='.repeat(70));
+console.log('');

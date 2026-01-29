@@ -37,6 +37,13 @@ export class AssistantView extends LitElement {
             position: relative;
             animation: fadeInScale 0.5s cubic-bezier(0.25, 0.46, 0.45, 0.94);
             transition: max-height 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            margin-bottom: 0;
+        }
+
+        .loading-area {
+            position: relative;
+            min-height: 0;
+            transition: all 0.3s ease;
         }
 
         @keyframes fadeInScale {
@@ -693,6 +700,8 @@ export class AssistantView extends LitElement {
             backdrop-filter: blur(8px);
             -webkit-backdrop-filter: blur(8px);
             letter-spacing: 0.2px;
+            user-select: text;
+            -webkit-user-select: text;
         }
         #textInput:focus {
             border: 1.5px solid var(--focus-border-color);
@@ -794,7 +803,7 @@ export class AssistantView extends LitElement {
         this.responses = [];
         this.currentResponseIndex = -1;
         this.selectedProfile = 'interview';
-        this.onSendText = () => {};
+        this.onSendText = () => { };
         this.isProcessingScreenshot = false;
     }
 
@@ -826,10 +835,10 @@ export class AssistantView extends LitElement {
                     sanitize: true, // Never trust AI responses for HTML!
                 });
                 let rendered = window.marked.parse(content);
-                
+
                 // Add copy buttons to code blocks
                 rendered = this.addCopyButtonsToCodeBlocks(rendered);
-                
+
                 console.log('Markdown rendered successfully');
                 return rendered;
             } catch (error) {
@@ -852,7 +861,7 @@ export class AssistantView extends LitElement {
                     .replace(/&amp;/g, '&')
                     .replace(/&quot;/g, '"')
                     .replace(/&#39;/g, "'");
-                
+
                 // Apply syntax highlighting if highlight.js is available
                 let highlightedCode = codeContent;
                 if (window.hljs) {
@@ -869,7 +878,7 @@ export class AssistantView extends LitElement {
                         highlightedCode = codeContent;
                     }
                 }
-                
+
                 return `<pre><code class="hljs">${highlightedCode}</code><button class="copy-button" onclick="copyCode(this, \`${cleanCode.replace(/`/g, '\\`')}\`)">Copy</button></pre>`;
             }
         );
@@ -966,7 +975,7 @@ export class AssistantView extends LitElement {
                 const originalText = button.textContent;
                 button.textContent = 'Copied!';
                 button.classList.add('copied');
-                
+
                 setTimeout(() => {
                     button.textContent = originalText;
                     button.classList.remove('copied');
@@ -980,11 +989,11 @@ export class AssistantView extends LitElement {
                 textArea.select();
                 document.execCommand('copy');
                 document.body.removeChild(textArea);
-                
+
                 const originalText = button.textContent;
                 button.textContent = 'Copied!';
                 button.classList.add('copied');
-                
+
                 setTimeout(() => {
                     button.textContent = originalText;
                     button.classList.remove('copied');
@@ -1091,23 +1100,67 @@ export class AssistantView extends LitElement {
         console.log('updateResponseContent called');
         const container = this.shadowRoot.querySelector('#responseContainer');
         if (container) {
-            const currentResponse = this.getCurrentResponse();
-            console.log('Current response:', currentResponse);
-            const renderedResponse = this.renderMarkdown(currentResponse);
-            console.log('Rendered response:', renderedResponse);
-            container.innerHTML = renderedResponse;
+            if (this.responses.length === 0) {
+                container.innerHTML = this.renderMarkdown(`Hello! How can I help you today?`);
+            } else {
+                const renderedResponses = this.responses.map((response, index) => {
+                    return `
+                        <div class="response-item" data-index="${index}">
+                            ${this.renderMarkdown(response)}
+                        </div>
+                        ${index < this.responses.length - 1 ? '<hr class="response-separator"/>' : ''}
+                    `;
+                }).join('');
+                container.innerHTML = renderedResponses;
+
+                // Scroll to bottom after update
+                setTimeout(() => {
+                    container.scrollTop = container.scrollHeight;
+                }, 0);
+            }
         } else {
             console.log('Response container not found');
         }
     }
 
+    handlePaste(e) {
+        e.stopPropagation();
+        // Manual paste fallback
+        const text = (e.clipboardData || window.clipboardData).getData('text');
+        if (text) {
+            e.preventDefault(); // Prevent default to avoid double paste if it suddenly starts working
+            const input = e.target;
+            const start = input.selectionStart;
+            const end = input.selectionEnd;
+            const value = input.value;
+            input.value = value.substring(0, start) + text + value.substring(end);
+            input.selectionStart = input.selectionEnd = start + text.length;
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+    }
+
+    handleKeyDown(e) {
+        // Allow copy/paste shortcuts
+        const isCmdOrCtrl = e.ctrlKey || e.metaKey;
+        const key = e.key.toLowerCase();
+        const isShortcut = isCmdOrCtrl && (key === 'c' || key === 'v' || key === 'x' || key === 'a');
+
+        if (isShortcut) {
+            e.stopPropagation();
+        }
+        this.handleTextKeydown(e);
+    }
+
     render() {
-        const currentResponse = this.getCurrentResponse();
         const responseCounter = this.getResponseCounter();
 
         return html`
             <div class="main-flex-container">
                 <div class="response-container" id="responseContainer">
+                    <!-- Responses will be rendered here via updateResponseContent -->
+                </div>
+                
+                <div class="loading-area">
                     ${this.isProcessingScreenshot ? html`
                         <div class="loading-indicator">
                             <div class="loading-spinner"></div>
@@ -1115,23 +1168,20 @@ export class AssistantView extends LitElement {
                         </div>
                     ` : ''}
                 </div>
-                <div class="shortcut-hint">Press the analyze shortcut to capture the screen</div>
+
+                <div class="shortcut-hint">Press Alt+S to capture the screen</div>
+                
                 <div class="text-input-container">
-                    <button class="nav-button" @click=${this.navigateToPreviousResponse} ?disabled=${this.currentResponseIndex <= 0}>
-                        <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                            <path d="M11 5l-4 4 4 4"/>
-                        </svg>
-                    </button>
-
-                    ${this.responses.length > 0 ? html` <span class="response-counter">${responseCounter}</span> ` : ''}
-
-                    <input type="text" id="textInput" placeholder="Type your question..." @keydown=${this.handleTextKeydown} />
-
-                    <button class="nav-button" @click=${this.navigateToNextResponse} ?disabled=${this.currentResponseIndex >= this.responses.length - 1}>
-                        <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                            <path d="M7 5l4 4-4 4"/>
-                        </svg>
-                    </button>
+                    ${this.responses.length > 0 ? html` <span class="response-counter">${this.responses.length}</span> ` : ''}
+                    <div class="input-container" style="flex: 1; display: flex; gap: 10px;">
+                        <input type="text" id="textInput" placeholder="Type your question..." @keydown=${this.handleKeyDown} @paste=${this.handlePaste} />
+                        <button id="sendButton" @click=${this.handleSendText}>
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width: 20px; height: 20px;">
+                                <line x1="22" y1="2" x2="11" y2="13"></line>
+                                <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+                            </svg>
+                        </button>
+                    </div>
                 </div>
             </div>
         `;

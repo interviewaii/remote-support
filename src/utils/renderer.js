@@ -139,9 +139,9 @@ function arrayBufferToBase64(buffer) {
 }
 
 async function initializeGemini(profile = 'interview', language = 'en-US') {
-    // Hardcoded Google Gemini API key
-    const apiKey = 'AIzaSyAROFVeb0T-PcWQVBTqD7xxLTsM5ChPseE';
-    const success = await ipcRenderer.invoke('initialize-gemini', apiKey, localStorage.getItem('customPrompt') || '', profile, language);
+    // OpenAI API key - replace with your own key
+    const apiKey = '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';
+    const success = await ipcRenderer.invoke('initialize-gemini', apiKey, localStorage.getItem('customPrompt') || '', localStorage.getItem('resumeContext') || '', profile, language);
     if (success) {
         interviewCrackerElement().setStatus('Live');
     } else {
@@ -229,25 +229,46 @@ async function startCapture(screenshotIntervalSeconds = 2, imageQuality = 'mediu
             console.log('Linux screen capture started');
         } else {
             // Windows - use display media with loopback for system audio
-            mediaStream = await navigator.mediaDevices.getDisplayMedia({
-                video: {
-                    frameRate: 1,
-                    width: { ideal: 1920 },
-                    height: { ideal: 1080 },
-                },
-                audio: {
-                    sampleRate: SAMPLE_RATE,
-                    channelCount: 1,
-                    echoCancellation: true,
-                    noiseSuppression: true,
-                    autoGainControl: true,
-                },
-            });
+            try {
+                mediaStream = await navigator.mediaDevices.getDisplayMedia({
+                    video: {
+                        frameRate: 1,
+                        width: { ideal: 1920 },
+                        height: { ideal: 1080 },
+                    },
+                    audio: {
+                        sampleRate: SAMPLE_RATE,
+                        channelCount: 1,
+                        echoCancellation: true,
+                        noiseSuppression: true,
+                        autoGainControl: true,
+                    },
+                });
+                console.log('Windows system audio capture synchronized');
+            } catch (err) {
+                console.error('Failed to get system audio:', err);
+            }
 
-            console.log('Windows capture started with loopback audio');
+            // Also get microphone for Windows
+            let micStream = null;
+            try {
+                micStream = await navigator.mediaDevices.getUserMedia({
+                    audio: {
+                        sampleRate: SAMPLE_RATE,
+                        channelCount: 1,
+                        echoCancellation: true,
+                        noiseSuppression: true,
+                        autoGainControl: true,
+                    },
+                    video: false,
+                });
+                console.log('Windows microphone capture synchronized');
+            } catch (micError) {
+                console.warn('Failed to get microphone access on Windows:', micError);
+            }
 
-            // Setup audio processing for Windows loopback audio only
-            setupWindowsLoopbackProcessing();
+            // Setup audio processing for Windows (System + Mic)
+            setupWindowsAudioProcessing(mediaStream, micStream);
         }
 
         console.log('MediaStream obtained:', {
@@ -257,15 +278,15 @@ async function startCapture(screenshotIntervalSeconds = 2, imageQuality = 'mediu
         });
 
         // Start capturing screenshots - check if manual mode
-        if (screenshotIntervalSeconds === 'manual' || screenshotIntervalSeconds === 'Manual') {
+        // FORCE MANUAL MODE: Comment out automatic logic to prevent ghost screenshots
+        if (true || screenshotIntervalSeconds === 'manual' || screenshotIntervalSeconds === 'Manual') {
             console.log('Manual mode enabled - screenshots will be captured on demand only');
             // Don't start automatic capture in manual mode
         } else {
+            // Automatic capture disabled for now
             const intervalMilliseconds = parseInt(screenshotIntervalSeconds) * 1000;
-            screenshotInterval = setInterval(() => captureScreenshot(imageQuality), intervalMilliseconds);
-
-            // Capture first screenshot immediately
-            setTimeout(() => captureScreenshot(imageQuality), 100);
+            // screenshotInterval = setInterval(() => captureScreenshot(imageQuality), intervalMilliseconds);
+            // setTimeout(() => captureScreenshot(imageQuality), 100);
         }
     } catch (err) {
         console.error('Error starting capture:', err);
@@ -306,37 +327,76 @@ function setupLinuxMicProcessing(micStream) {
     audioProcessor = micProcessor;
 }
 
-function setupWindowsLoopbackProcessing() {
-    // Setup audio processing for Windows loopback audio only
+function setupWindowsAudioProcessing(systemStream, micStream) {
+    // Setup audio processing for Windows (System + Mic)
     audioContext = new AudioContext({ sampleRate: SAMPLE_RATE });
-    const source = audioContext.createMediaStreamSource(mediaStream);
     audioProcessor = audioContext.createScriptProcessor(BUFFER_SIZE, 1, 1);
+
+    // Create sources
+    if (systemStream && systemStream.getAudioTracks().length > 0) {
+        const systemSource = audioContext.createMediaStreamSource(systemStream);
+        systemSource.connect(audioProcessor);
+    }
+
+    if (micStream && micStream.getAudioTracks().length > 0) {
+        const micSource = audioContext.createMediaStreamSource(micStream);
+        micSource.connect(audioProcessor);
+    } else {
+        console.warn('No microphone track available for mixing');
+    }
 
     let audioBuffer = [];
     const samplesPerChunk = SAMPLE_RATE * AUDIO_CHUNK_DURATION;
 
     audioProcessor.onaudioprocess = async e => {
         const inputData = e.inputBuffer.getChannelData(0);
-        audioBuffer.push(...inputData);
+
+        // Simple Volume Filter: Check if there is actual sound (RMS volume check)
+        let sum = 0;
+        for (let i = 0; i < inputData.length; i++) {
+            sum += inputData[i] * inputData[i];
+        }
+        const rms = Math.sqrt(sum / inputData.length);
+
+        // Only buffer if sound is audible (Threshold: 0.03 - increased to prevent noise hallucinations)
+        if (rms > 0.03) {
+            audioBuffer.push(...inputData);
+        } else {
+            // If it's silent, we still want to maintain timing but skip sending to Whisper
+            // However, Whisper works better with continuous audio, so we only skip if it's LONG silence
+            // For now, let's just push silence to keep the timing if the buffer isn't empty
+            if (audioBuffer.length > 0) {
+                audioBuffer.push(...inputData);
+            }
+        }
 
         // Process audio in chunks
         while (audioBuffer.length >= samplesPerChunk) {
             const chunk = audioBuffer.splice(0, samplesPerChunk);
-            const pcmData16 = convertFloat32ToInt16(chunk);
-            const base64Data = arrayBufferToBase64(pcmData16.buffer);
 
-            await ipcRenderer.invoke('send-audio-content', {
-                data: base64Data,
-                mimeType: 'audio/pcm;rate=24000',
-            });
+            // Re-check chunk for silence before sending
+            let chunkSum = 0;
+            for (let i = 0; i < chunk.length; i++) {
+                chunkSum += chunk[i] * chunk[i];
+            }
+            const chunkRms = Math.sqrt(chunkSum / chunk.length);
+
+            if (chunkRms > 0.03) {
+                const pcmData16 = convertFloat32ToInt16(chunk);
+                const base64Data = arrayBufferToBase64(pcmData16.buffer);
+
+                await ipcRenderer.invoke('send-audio-content', {
+                    data: base64Data,
+                    mimeType: 'audio/pcm;rate=24000',
+                });
+            }
         }
     };
 
-    source.connect(audioProcessor);
     audioProcessor.connect(audioContext.destination);
 }
 
-async function captureScreenshot(imageQuality = 'medium', isManual = false) {
+async function captureScreenshot(imageQuality = 'medium', isManual = false, prompt = null) {
     console.log(`Capturing ${isManual ? 'manual' : 'automated'} screenshot...`);
     if (!mediaStream) return;
 
@@ -383,6 +443,17 @@ async function captureScreenshot(imageQuality = 'medium', isManual = false) {
 
     if (isBlank) {
         console.warn('Screenshot appears to be blank/black');
+        if (isManual) {
+            alert('Screen capture failed (blank image). Please check your screen sharing permissions or try restarting the app.');
+            // Hide loading indicator
+            if (window.setScreenshotProcessing) {
+                window.setScreenshotProcessing(false);
+            }
+            if (window.interviewCracker && window.interviewCracker.setStatus) {
+                window.interviewCracker.setStatus('Error: Blank screenshot');
+            }
+            return;
+        }
     }
 
     let qualityValue;
@@ -426,6 +497,7 @@ async function captureScreenshot(imageQuality = 'medium', isManual = false) {
 
                 const result = await ipcRenderer.invoke('send-image-content', {
                     data: base64data,
+                    prompt: prompt,
                 });
 
                 if (result.success) {
@@ -435,6 +507,11 @@ async function captureScreenshot(imageQuality = 'medium', isManual = false) {
                     console.log(`📊 Image sent successfully - ${imageTokens} tokens used (${offscreenCanvas.width}x${offscreenCanvas.height})`);
                 } else {
                     console.error('Failed to send image:', result.error);
+                }
+
+                // Explicitly hide loading indicator when manual screenshot is done
+                if (isManual && window.setScreenshotProcessing) {
+                    window.setScreenshotProcessing(false);
                 }
             };
             reader.readAsDataURL(blob);
@@ -458,16 +535,7 @@ async function captureManualScreenshot(imageQuality = null) {
     }
 
     const quality = imageQuality || currentImageQuality;
-    await captureScreenshot(quality, true); // Pass true for isManual
-
-    // Update status to show AI processing
-    if (window.interviewCracker && window.interviewCracker.setStatus) {
-        window.interviewCracker.setStatus('AI analyzing screenshot for questions...');
-    }
-
-    // Removed artificial delay for instant response
-    try {
-        await sendTextMessage(`Analyze this screenshot and identify any questions or problems that need to be solved. Provide a comprehensive answer following these guidelines:
+    const analysisPrompt = `Analyze this screenshot and identify any questions or problems that need to be solved. Provide a comprehensive answer following these guidelines:
 
 **For Code Questions:**
 - First, identify the programming language and problem type
@@ -505,17 +573,13 @@ async function captureManualScreenshot(imageQuality = null) {
 - Use clear formatting with bullet points and sections
 - Be direct and complete - no unnecessary explanations
 
-Give me the answer immediately without any preamble.`);
-    } catch (error) {
-        console.error('Error sending screenshot analysis message:', error);
-        // Hide loading indicator on error
-        if (window.setScreenshotProcessing) {
-            window.setScreenshotProcessing(false);
-        }
-        // Update status to show error
-        if (window.interviewCracker && window.interviewCracker.setStatus) {
-            window.interviewCracker.setStatus('Error analyzing screenshot');
-        }
+Give me the answer immediately without any preamble.`;
+
+    await captureScreenshot(quality, true, analysisPrompt); // Pass true for isManual and the prompt
+
+    // Update status to show AI processing
+    if (window.interviewCracker && window.interviewCracker.setStatus) {
+        window.interviewCracker.setStatus('AI analyzing screenshot for questions...');
     }
 }
 
@@ -676,51 +740,11 @@ ipcRenderer.on('save-conversation-turn', async (event, data) => {
 // Initialize conversation storage when renderer loads
 initConversationStorage().catch(console.error);
 
-// Handle shortcuts based on current view
-function handleShortcut(shortcutKey) {
-    console.log('Handling shortcut:', shortcutKey);
-
-    // Get current view from the app
-    const currentView = window.interviewCracker.getCurrentView ? window.interviewCracker.getCurrentView() : null;
-    console.log('Current view:', currentView);
-
-    if (shortcutKey === 'ctrl+enter' || shortcutKey === 'cmd+enter') {
-        if (currentView === 'main') {
-            // Trigger the start session from main view
-            console.log('Triggering start session from main view');
-
-            // First try to get the app component and call handleStart directly
-            const appElement = document.querySelector('interview-ai-app');
-            if (appElement && typeof appElement.handleStart === 'function') {
-                appElement.handleStart();
-            } else {
-                // Fallback: simulate click on the start button
-                const mainView = document.querySelector('main-view');
-                if (mainView) {
-                    const startButton = mainView.shadowRoot?.querySelector('.start-button');
-                    if (startButton && !startButton.classList.contains('initializing')) {
-                        startButton.click();
-                    } else {
-                        console.warn('Start button not available or initializing');
-                    }
-                } else {
-                    console.warn('Could not find main-view element');
-                }
-            }
-        } else {
-            // In other views, take manual screenshot
-            console.log('Taking manual screenshot from current view');
-            captureManualScreenshot();
-        }
-    }
-}
-
 window.interviewAI = window.interviewCracker = {
     initializeGemini,
     startCapture,
     stopCapture,
     sendTextMessage,
-    handleShortcut,
     // Conversation history functions
     getAllConversationSessions,
     getConversationSession,

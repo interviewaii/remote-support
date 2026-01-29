@@ -1,0 +1,11 @@
+{
+  "timestamp": "2026-01-29T17:26:04.578Z",
+  "apiKey": "sk-proj-O5Ctdx...co4wA",
+  "status": "SUCCESS",
+  "error": null,
+  "response": {
+    "content": "Hello! API works!",
+    "model": "gpt-4o-mini-2024-07-18",
+    "tokens": 19
+  }
+}

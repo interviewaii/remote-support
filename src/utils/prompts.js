@@ -3,12 +3,23 @@ const profilePrompts = {
         intro: `You are an AI-powered interview assistant, designed to act as a discreet on-screen teleprompter. Your mission is to help the user excel in their job interview by providing concise, impactful, and ready-to-speak answers or key talking points. Analyze the ongoing interview dialogue and, crucially, the 'User-provided context' below.`,
 
         formatRequirements: `**RESPONSE FORMAT REQUIREMENTS:**
-- Keep responses SHORT and CONCISE (5-7 sentences max)
+- Keep responses SHORT and CONCISE (3-6sentences max)
 - Use **markdown formatting** for better readability
 - Use **bold** for key points and emphasis
 - Use bullet points (-) for lists when appropriate
 - Focus on the most essential information only
-- For coding questions, provide **concise code examples** with brief explanations`,
+- For coding questions, provide **concise code examples** with brief explanations
+
+**REPETITION & NOISE HANDLING:**
+- **NEVER repeat information** already provided in the conversation history.
+- If the current message is a fragment or duplicate of a previous question, acknowledge it briefly or provide NEW information only.
+- **Ignore unintentional background noise** or audio fragments (like "you", "thanks", "ok") if they don't form a meaningful question.
+- If you have just analyzed a screenshot, do NOT repeat the same analysis if the user asks a follow-up that was already covered.
+
+**LANGUAGE RESTRICTION:**
+- **ENGLISH ONLY**: You must ONLY respond to English inputs.
+- If the input is in any other language (Hindi, Spanish, etc.), **IGNORE IT COMPLETELY** and output nothing (or an empty string).
+- Do not translate non-English questions. Do not acknowledge them.`,
 
         searchUsage: `**SEARCH TOOL USAGE:**
 - If the interviewer mentions **recent events, news, or current trends** (anything from the last 6 months), **ALWAYS use Google search** to get up-to-date information
@@ -45,7 +56,7 @@ Provide only the exact words to say in **markdown format**. No coaching, no "you
         intro: `You are a coding interview assistant. Your job is to provide clear, concise answers to programming questions, technical problems, and coding challenges. Give direct responses with working code examples and brief explanations.`,
 
         formatRequirements: `**RESPONSE FORMAT REQUIREMENTS:**
-- Keep responses CONCISE but COMPLETE (2-4 sentences for explanations)
+- Keep responses CONCISE but COMPLETE (2-7 sentences for explanations)
 - Use **markdown formatting** for better readability
 - Use **code blocks** with proper syntax highlighting for code examples
 - Use **bold** for key concepts and time/space complexity
@@ -113,7 +124,7 @@ Provide clear, working code examples with brief explanations. Include time/space
         intro: `You are a sales call assistant. Your job is to provide the exact words the salesperson should say to prospects during sales calls. Give direct, ready-to-speak responses that are persuasive and professional.`,
 
         formatRequirements: `**RESPONSE FORMAT REQUIREMENTS:**
-- Keep responses SHORT and CONCISE (1-3 sentences max)
+- Keep responses SHORT and CONCISE (1-7 sentences max)
 - Use **markdown formatting** for better readability
 - Use **bold** for key points and emphasis
 - Use bullet points (-) for lists when appropriate
@@ -144,7 +155,7 @@ Provide only the exact words to say in **markdown format**. Be persuasive but no
         intro: `You are a meeting assistant. Your job is to provide the exact words to say during professional meetings, presentations, and discussions. Give direct, ready-to-speak responses that are clear and professional.`,
 
         formatRequirements: `**RESPONSE FORMAT REQUIREMENTS:**
-- Keep responses SHORT and CONCISE (1-3 sentences max)
+- Keep responses SHORT and CONCISE (1-7 sentences max)
 - Use **markdown formatting** for better readability
 - Use **bold** for key points and emphasis
 - Use bullet points (-) for lists when appropriate
@@ -207,6 +218,7 @@ Provide only the exact words to say in **markdown format**. Be confident, engagi
 
         formatRequirements: `**RESPONSE FORMAT REQUIREMENTS:**
 - Keep responses SHORT and CONCISE (1-3 sentences max)
+- Keep responses in Human language and not in business language
 - Use **markdown formatting** for better readability
 - Use **bold** for key points and emphasis
 - Use bullet points (-) for lists when appropriate
@@ -234,7 +246,7 @@ Provide only the exact words to say in **markdown format**. Focus on finding win
     },
 };
 
-function buildSystemPrompt(promptParts, customPrompt = '', googleSearchEnabled = true) {
+function buildSystemPrompt(promptParts, customPrompt = '', resumeContext = '', googleSearchEnabled = true) {
     const sections = [promptParts.intro, '\n\n', promptParts.formatRequirements];
 
     // Only add search usage section if Google Search is enabled
@@ -242,14 +254,19 @@ function buildSystemPrompt(promptParts, customPrompt = '', googleSearchEnabled =
         sections.push('\n\n', promptParts.searchUsage);
     }
 
+    // Add resume context if provided
+    if (resumeContext && resumeContext.trim()) {
+        sections.push('\n\nRESUME/USER CONTEXT\n-----\n', resumeContext, '\n-----\n');
+    }
+
     sections.push('\n\n', promptParts.content, '\n\nUser-provided context\n-----\n', customPrompt, '\n-----\n\n', promptParts.outputInstructions);
 
     return sections.join('');
 }
 
-function getSystemPrompt(profile, customPrompt = '', googleSearchEnabled = true) {
+function getSystemPrompt(profile, customPrompt = '', resumeContext = '', googleSearchEnabled = true) {
     const promptParts = profilePrompts[profile] || profilePrompts.interview;
-    return buildSystemPrompt(promptParts, customPrompt, googleSearchEnabled);
+    return buildSystemPrompt(promptParts, customPrompt, resumeContext, googleSearchEnabled);
 }
 
 module.exports = {

@@ -1,0 +1,736 @@
+const OpenAI = require('openai');
+const { BrowserWindow, ipcMain } = require('electron');
+const { spawn } = require('child_process');
+const { saveDebugAudio } = require('../audioUtils');
+const { getSystemPrompt } = require('./prompts');
+
+// Conversation tracking variables
+let currentSessionId = null;
+let currentTranscription = '';
+let conversationHistory = [];
+let isInitializingSession = false;
+
+// OpenAI client and streaming variables
+let openaiClient = null;
+let currentStream = null;
+let messageBuffer = '';
+
+// Audio capture variables
+let systemAudioProc = null;
+
+// Reconnection tracking variables
+let reconnectionAttempts = 0;
+let maxReconnectionAttempts = 3;
+let reconnectionDelay = 2000; // 2 seconds between attempts
+let lastSessionParams = null;
+
+// Audio transcription with Whisper
+let audioChunksForTranscription = [];
+let receivedAudioBuffer = []; // Accumulator for Windows/Linux audio chunks
+let isTranscribing = false;
+let lastSentTranscription = ""; // To prevent duplicate messages
+let lastSentTimestamp = 0;
+let lastImageAnalysisTimestamp = 0; // To prevent redundant responses after screenshots
+let silenceTimer = null; // Timer to flush buffer on silence
+
+function sendToRenderer(channel, data) {
+    const windows = BrowserWindow.getAllWindows();
+    if (windows.length > 0) {
+        windows[0].webContents.send(channel, data);
+    }
+}
+
+// Conversation management functions
+function initializeNewSession() {
+    currentSessionId = Date.now().toString();
+    currentTranscription = '';
+    conversationHistory = [];
+    console.log('New conversation session started:', currentSessionId);
+}
+
+function saveConversationTurn(transcription, aiResponse) {
+    if (!currentSessionId) {
+        initializeNewSession();
+    }
+
+    const conversationTurn = {
+        timestamp: Date.now(),
+        transcription: transcription.trim(),
+        ai_response: aiResponse.trim(),
+    };
+
+    conversationHistory.push(conversationTurn);
+    console.log('Saved conversation turn:', conversationTurn);
+
+    // Send to renderer to save in IndexedDB
+    sendToRenderer('save-conversation-turn', {
+        sessionId: currentSessionId,
+        turn: conversationTurn,
+        fullHistory: conversationHistory,
+    });
+}
+
+function getCurrentSessionData() {
+    return {
+        sessionId: currentSessionId,
+        history: conversationHistory,
+    };
+}
+
+async function getStoredSetting(key, defaultValue) {
+    try {
+        const windows = BrowserWindow.getAllWindows();
+        if (windows.length > 0) {
+            // Wait a bit for the renderer to be ready
+            await new Promise(resolve => setTimeout(resolve, 100));
+
+            // Try to get setting from renderer process localStorage
+            const value = await windows[0].webContents.executeJavaScript(`
+                (function() {
+                    try {
+                        if (typeof localStorage === 'undefined') {
+                            console.log('localStorage not available yet for ${key}');
+                            return '${defaultValue}';
+                        }
+                        const stored = localStorage.getItem('${key}');
+                        console.log('Retrieved setting ${key}:', stored);
+                        return stored || '${defaultValue}';
+                    } catch (e) {
+                        console.error('Error accessing localStorage for ${key}:', e);
+                        return '${defaultValue}';
+                    }
+                })()
+            `);
+            return value;
+        }
+    } catch (error) {
+        console.error('Error getting stored setting for', key, ':', error.message);
+    }
+    console.log('Using default value for', key, ':', defaultValue);
+    return defaultValue;
+}
+
+async function initializeOpenAISession(apiKey, customPrompt = '', resumeContext = '', profile = 'interview', language = 'en-US', isReconnection = false) {
+    if (isInitializingSession) {
+        console.log('Session initialization already in progress');
+        return false;
+    }
+
+    isInitializingSession = true;
+    sendToRenderer('session-initializing', true);
+
+    // Store session parameters for reconnection (only if not already reconnecting)
+    if (!isReconnection) {
+        lastSessionParams = {
+            apiKey,
+            customPrompt,
+            resumeContext,
+            profile,
+            language,
+        };
+        reconnectionAttempts = 0; // Reset counter for new session
+    }
+
+    try {
+        // Initialize OpenAI client
+        openaiClient = new OpenAI({
+            apiKey: apiKey,
+        });
+
+        console.log('Initializing OpenAI session with model: gpt-4o-mini');
+        console.log('API Key (masked):', apiKey ? `${apiKey.substring(0, 7)}...${apiKey.substring(apiKey.length - 4)}` : 'undefined');
+
+        // Get enabled tools
+        const googleSearchEnabled = await getStoredSetting('googleSearchEnabled', 'true');
+        const systemPrompt = getSystemPrompt(profile, customPrompt, resumeContext, googleSearchEnabled === 'true');
+
+        console.log('System Prompt Length:', systemPrompt ? systemPrompt.length : 0);
+        console.log('Resume Context Length:', resumeContext ? resumeContext.length : 0);
+
+        // Initialize new conversation session (only if not reconnecting)
+        if (!isReconnection) {
+            initializeNewSession();
+        }
+
+        // Test the connection with a simple request
+        await openaiClient.chat.completions.create({
+            model: 'gpt-4o-mini',
+            messages: [{ role: 'system', content: 'Test connection' }],
+            max_tokens: 1,
+        });
+
+        console.log('OpenAI session initialized successfully');
+        sendToRenderer('update-status', 'Session connected');
+
+        isInitializingSession = false;
+        sendToRenderer('session-initializing', false);
+
+        return true;
+    } catch (error) {
+        console.error('Failed to initialize OpenAI session:', error);
+        if (error.message) {
+            console.error('Error message:', error.message);
+        }
+
+        isInitializingSession = false;
+        sendToRenderer('session-initializing', false);
+        sendToRenderer('update-status', 'Error: ' + error.message);
+
+        return false;
+    }
+}
+
+async function transcribeAudioWithWhisper(audioBuffer) {
+    if (!openaiClient || isTranscribing) return '';
+
+    try {
+        isTranscribing = true;
+
+        // Convert audio buffer to a format Whisper can accept
+        // Note: Whisper expects audio files, so we'll need to save temporarily
+        const fs = require('fs');
+        const path = require('path');
+        const os = require('os');
+
+        const tempFile = path.join(os.tmpdir(), `audio_${Date.now()}.wav`);
+
+        // Create WAV file from PCM data
+        const wavHeader = createWavHeader(audioBuffer.length, 24000, 1, 16);
+        const wavBuffer = Buffer.concat([wavHeader, audioBuffer]);
+        fs.writeFileSync(tempFile, wavBuffer);
+
+        // Transcribe with Whisper
+        const transcription = await openaiClient.audio.transcriptions.create({
+            file: fs.createReadStream(tempFile),
+            model: 'whisper-1',
+            language: 'en', // Strict English only
+        });
+
+        // Clean up temp file
+        fs.unlinkSync(tempFile);
+
+        isTranscribing = false;
+        return transcription.text || '';
+
+    } catch (error) {
+        console.error('Error transcribing audio with Whisper:', error);
+        isTranscribing = false;
+        return '';
+    }
+}
+
+function createWavHeader(dataLength, sampleRate, channels, bitsPerSample) {
+    const header = Buffer.alloc(44);
+
+    // "RIFF" chunk descriptor
+    header.write('RIFF', 0);
+    header.writeUInt32LE(36 + dataLength, 4);
+    header.write('WAVE', 8);
+
+    // "fmt " sub-chunk
+    header.write('fmt ', 12);
+    header.writeUInt32LE(16, 16); // Subchunk1Size
+    header.writeUInt16LE(1, 20); // AudioFormat (1 = PCM)
+    header.writeUInt16LE(channels, 22);
+    header.writeUInt32LE(sampleRate, 24);
+    header.writeUInt32LE(sampleRate * channels * bitsPerSample / 8, 28); // ByteRate
+    header.writeUInt16LE(channels * bitsPerSample / 8, 32); // BlockAlign
+    header.writeUInt16LE(bitsPerSample, 34);
+
+    // "data" sub-chunk
+    header.write('data', 36);
+    header.writeUInt32LE(dataLength, 40);
+
+    return header;
+}
+
+async function sendMessageToOpenAI(userMessage) {
+    if (!openaiClient) {
+        console.error('OpenAI client not initialized');
+        return;
+    }
+
+    try {
+        // Build conversation messages
+        const messages = [
+            {
+                role: 'system', content: getSystemPrompt(
+                    lastSessionParams?.profile || 'interview',
+                    lastSessionParams?.customPrompt || '',
+                    lastSessionParams?.resumeContext || '',
+                    await getStoredSetting('googleSearchEnabled', 'true') === 'true'
+                )
+            }
+        ];
+
+        // Add conversation history
+        conversationHistory.forEach(turn => {
+            messages.push({ role: 'user', content: turn.transcription });
+            messages.push({ role: 'assistant', content: turn.ai_response });
+        });
+
+        // Add current message
+        messages.push({ role: 'user', content: userMessage });
+
+        console.log('Sending message to OpenAI...');
+        messageBuffer = '';
+
+        // Create streaming completion
+        const stream = await openaiClient.chat.completions.create({
+            model: 'gpt-4o-mini', // You can change to 'gpt-4' or 'gpt-4-turbo' for better quality
+            messages: messages,
+            stream: true,
+            temperature: 0.7,
+            max_tokens: 2000,
+        });
+
+        currentStream = stream;
+
+        // Process streaming response
+        for await (const chunk of stream) {
+            const content = chunk.choices[0]?.delta?.content || '';
+            if (content) {
+                messageBuffer += content;
+                // Send streaming updates to renderer
+                sendToRenderer('update-response-stream', content);
+            }
+        }
+
+        console.log('Response complete:', messageBuffer.substring(0, 50) + '...');
+        sendToRenderer('update-response', messageBuffer);
+
+        // Save conversation turn
+        if (userMessage && messageBuffer) {
+            saveConversationTurn(userMessage, messageBuffer);
+        }
+
+        sendToRenderer('update-status', 'Listening...');
+
+    } catch (error) {
+        console.error('Error sending message to OpenAI:', error);
+        sendToRenderer('update-status', 'Error: ' + error.message);
+    }
+}
+
+function killExistingSystemAudioDump() {
+    return new Promise(resolve => {
+        console.log('Checking for existing SystemAudioDump processes...');
+
+        // Kill any existing SystemAudioDump processes
+        const killProc = spawn('pkill', ['-f', 'SystemAudioDump'], {
+            stdio: 'ignore',
+        });
+
+        killProc.on('close', code => {
+            if (code === 0) {
+                console.log('Killed existing SystemAudioDump processes');
+            } else {
+                console.log('No existing SystemAudioDump processes found');
+            }
+            resolve();
+        });
+
+        killProc.on('error', err => {
+            console.log('Error checking for existing processes (this is normal):', err.message);
+            resolve();
+        });
+
+        // Timeout after 2 seconds
+        setTimeout(() => {
+            killProc.kill();
+            resolve();
+        }, 2000);
+    });
+}
+
+async function startMacOSAudioCapture(sessionRef) {
+    if (process.platform !== 'darwin') return false;
+
+    // Kill any existing SystemAudioDump processes first
+    await killExistingSystemAudioDump();
+
+    console.log('Starting macOS audio capture with SystemAudioDump...');
+
+    const { app } = require('electron');
+    const path = require('path');
+
+    let systemAudioPath;
+    if (app.isPackaged) {
+        systemAudioPath = path.join(process.resourcesPath, 'SystemAudioDump');
+    } else {
+        systemAudioPath = path.join(__dirname, '../assets', 'SystemAudioDump');
+    }
+
+    console.log('SystemAudioDump path:', systemAudioPath);
+
+    systemAudioProc = spawn(systemAudioPath, [], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    if (!systemAudioProc.pid) {
+        console.error('Failed to start SystemAudioDump');
+        return false;
+    }
+
+    console.log('SystemAudioDump started with PID:', systemAudioProc.pid);
+
+    const CHUNK_DURATION = 1.0; // 1 second chunks for Whisper transcription
+    const SAMPLE_RATE = 24000;
+    const BYTES_PER_SAMPLE = 2;
+    const CHANNELS = 2;
+    const CHUNK_SIZE = SAMPLE_RATE * BYTES_PER_SAMPLE * CHANNELS * CHUNK_DURATION;
+
+    let audioBuffer = Buffer.alloc(0);
+
+    systemAudioProc.stdout.on('data', async data => {
+        audioBuffer = Buffer.concat([audioBuffer, data]);
+
+        while (audioBuffer.length >= CHUNK_SIZE) {
+            const chunk = audioBuffer.slice(0, CHUNK_SIZE);
+            audioBuffer = audioBuffer.slice(CHUNK_SIZE);
+
+            const monoChunk = CHANNELS === 2 ? convertStereoToMono(chunk) : chunk;
+
+            // Accumulate audio for transcription
+            audioChunksForTranscription.push(monoChunk);
+
+            // Transcribe every 3 seconds of audio
+            if (audioChunksForTranscription.length >= 3 && !isTranscribing) {
+                const combinedAudio = Buffer.concat(audioChunksForTranscription);
+                audioChunksForTranscription = [];
+
+                const transcription = await transcribeAudioWithWhisper(combinedAudio);
+                if (transcription) {
+                    console.log('Transcribed:', transcription);
+                    currentTranscription += transcription + ' ';
+
+                    // Send transcription to OpenAI for response
+                    await sendMessageToOpenAI(transcription);
+                }
+            }
+
+            if (process.env.DEBUG_AUDIO) {
+                console.log(`Processed audio chunk: ${chunk.length} bytes`);
+                saveDebugAudio(monoChunk, 'system_audio');
+            }
+        }
+
+        const maxBufferSize = SAMPLE_RATE * BYTES_PER_SAMPLE * 1;
+        if (audioBuffer.length > maxBufferSize) {
+            audioBuffer = audioBuffer.slice(-maxBufferSize);
+        }
+    });
+
+    systemAudioProc.stderr.on('data', data => {
+        console.error('SystemAudioDump stderr:', data.toString());
+    });
+
+    systemAudioProc.on('close', code => {
+        console.log('SystemAudioDump process closed with code:', code);
+        systemAudioProc = null;
+    });
+
+    systemAudioProc.on('error', err => {
+        console.error('SystemAudioDump process error:', err);
+        systemAudioProc = null;
+    });
+
+    return true;
+}
+
+function convertStereoToMono(stereoBuffer) {
+    const samples = stereoBuffer.length / 4;
+    const monoBuffer = Buffer.alloc(samples * 2);
+
+    for (let i = 0; i < samples; i++) {
+        const leftSample = stereoBuffer.readInt16LE(i * 4);
+        monoBuffer.writeInt16LE(leftSample, i * 2);
+    }
+
+    return monoBuffer;
+}
+
+function stopMacOSAudioCapture() {
+    if (systemAudioProc) {
+        console.log('Stopping SystemAudioDump...');
+        systemAudioProc.kill('SIGTERM');
+        systemAudioProc = null;
+    }
+    audioChunksForTranscription = [];
+}
+
+function setupOpenAIIpcHandlers(sessionRef) {
+    // Store the sessionRef globally for reconnection access
+    global.openaiSessionRef = sessionRef;
+
+    ipcMain.handle('initialize-gemini', async (event, apiKey, customPrompt, resumeContext, profile = 'interview', language = 'en-US') => {
+        const success = await initializeOpenAISession(apiKey, customPrompt, resumeContext, profile, language);
+        if (success) {
+            sessionRef.current = true; // Mark session as active
+            return true;
+        }
+        return false;
+    });
+
+    ipcMain.handle('send-audio-content', async (event, { data, mimeType }) => {
+        if (!openaiClient) {
+            return { success: false, error: 'No active session' };
+        }
+
+        try {
+            // Decode base64 audio data
+            const audioBuffer = Buffer.from(data, 'base64');
+
+            // Accumulate audio chunks
+            receivedAudioBuffer.push(audioBuffer);
+
+            // Calculate current accumulated duration (25ms chunks)
+            // 25ms = 0.025 seconds. 3 seconds = 120 chunks.
+            const ACCUMULATION_THRESHOLD = 120; // Approx 3 seconds
+
+            // Reset silence timer
+            if (silenceTimer) clearTimeout(silenceTimer);
+
+            if (receivedAudioBuffer.length >= ACCUMULATION_THRESHOLD) {
+                if (!isTranscribing) {
+                    processAudioBuffer();
+                }
+            } else {
+                // Set flush timer for 600ms of silence
+                silenceTimer = setTimeout(() => {
+                    if (receivedAudioBuffer.length > 0 && !isTranscribing) {
+                        console.log(`Silence detected (${receivedAudioBuffer.length} chunks), flushing buffer...`);
+                        processAudioBuffer().catch(err => console.error('Error in silence flush:', err));
+                    }
+                }, 600);
+            }
+
+            return { success: true };
+        } catch (error) {
+            console.error('Error processing audio:', error);
+            return { success: false, error: error.message };
+        }
+    });
+
+    async function processAudioBuffer() {
+        if (receivedAudioBuffer.length === 0 || isTranscribing) return;
+
+        const combinedBuffer = Buffer.concat(receivedAudioBuffer);
+        receivedAudioBuffer = []; // Reset accumulator
+        if (silenceTimer) clearTimeout(silenceTimer); // Clear any pending flush
+
+        console.log(`Processing accumulated audio: ${combinedBuffer.length} bytes`);
+
+        // Transcribe audio with Whisper
+        const transcription = await transcribeAudioWithWhisper(combinedBuffer);
+
+        if (transcription && transcription.trim().length > 0) {
+            const text = transcription.trim();
+            const lowerText = text.toLowerCase().replace(/[.,!?;]$/, "");
+
+            // 1. Strict Hallucination Filter (Common Whisper artifacts on noise)
+            const hallucinations = /^(you|thanks?|thank you|bye|goodbye|you\.|thanks\.|subs? by|subtitle|thank you for watching|please subscribe|unintelligible|\[music\]|\[audio\]|\[silence\]|silence|amara\.org|subtitles by|copyright|all rights reserved)$/i;
+
+            // Ignore very short inputs (< 5 chars) as they are likely noise ("He", "It", "No")
+            if (lowerText.length < 5 || (lowerText.length < 20 && hallucinations.test(lowerText))) {
+                console.log(`Filtered Whisper hallucination/noise: "${text}"`);
+                return;
+            }
+
+            // 2. Duplicate & Recency Check
+            const now = Date.now();
+
+            if (text === lastSentTranscription && (now - lastSentTimestamp < 10000)) {
+                console.log(`Skipped duplicate transcription: "${text}"`);
+                return;
+            }
+
+            if (now - lastImageAnalysisTimestamp < 5000 && text.length < 30) {
+                const genericFollowups = /^(solve (this|it)|what is (this|it)|what's (this|it)|can you solve|help me|tell me)$/i;
+                if (genericFollowups.test(lowerText) || lowerText.split(' ').length <= 3) {
+                    console.log(`Skipped short/generic audio response during screenshot cool-down: "${text}"`);
+                    return;
+                }
+            }
+
+            console.log('Audio transcribed:', transcription);
+            currentTranscription += transcription + ' ';
+            lastSentTranscription = text;
+            lastSentTimestamp = now;
+
+            // Send to OpenAI for response
+            await sendMessageToOpenAI(transcription);
+        }
+    }
+
+    ipcMain.handle('send-image-content', async (event, { data, prompt, debug }) => {
+        if (!openaiClient) {
+            return { success: false, error: 'No active session' };
+        }
+
+        try {
+            if (!data || typeof data !== 'string') {
+                console.error('Invalid image data received');
+                return { success: false, error: 'Invalid image data' };
+            }
+
+            const analysisPrompt = prompt || 'Analyze this image and provide relevant information for an interview context.';
+            console.log('Processing image with GPT-4 Vision. Prompt:', analysisPrompt.substring(0, 100) + '...');
+
+            // Use GPT-4 Vision for image analysis
+            const response = await openaiClient.chat.completions.create({
+                model: 'gpt-4o', // GPT-4 with vision capabilities
+                messages: [
+                    {
+                        role: 'user',
+                        content: [
+                            {
+                                type: 'text',
+                                text: analysisPrompt
+                            },
+                            {
+                                type: 'image_url',
+                                image_url: {
+                                    url: `data:image/jpeg;base64,${data}`
+                                }
+                            }
+                        ]
+                    }
+                ],
+                max_tokens: 1000, // Increased for more detailed answers
+            });
+
+            const imageAnalysis = response.choices[0].message.content;
+            console.log('Image analysis complete. Length:', imageAnalysis.length);
+
+            // Send the analysis as a message
+            sendToRenderer('update-response', imageAnalysis);
+
+            // Save conversation turn if a prompt was provided (manual capture)
+            if (prompt && imageAnalysis) {
+                saveConversationTurn("(Screenshot Analyzed)", imageAnalysis);
+                // Mark timestamp to prevent redundant audio responses
+                lastImageAnalysisTimestamp = Date.now();
+            }
+
+            return { success: true };
+        } catch (error) {
+            console.error('Error processing image:', error);
+            return { success: false, error: error.message };
+        }
+    });
+
+    ipcMain.handle('send-text-message', async (event, text) => {
+        if (!openaiClient) {
+            return { success: false, error: 'No active session' };
+        }
+
+        try {
+            if (!text || typeof text !== 'string' || text.trim().length === 0) {
+                return { success: false, error: 'Invalid text message' };
+            }
+
+            console.log('Sending text message:', text);
+            await sendMessageToOpenAI(text);
+            return { success: true };
+        } catch (error) {
+            console.error('Error sending text:', error);
+            return { success: false, error: error.message };
+        }
+    });
+
+    ipcMain.handle('start-macos-audio', async event => {
+        if (process.platform !== 'darwin') {
+            return {
+                success: false,
+                error: 'macOS audio capture only available on macOS',
+            };
+        }
+
+        try {
+            const success = await startMacOSAudioCapture(sessionRef);
+            return { success };
+        } catch (error) {
+            console.error('Error starting macOS audio capture:', error);
+            return { success: false, error: error.message };
+        }
+    });
+
+    ipcMain.handle('stop-macos-audio', async event => {
+        try {
+            stopMacOSAudioCapture();
+            return { success: true };
+        } catch (error) {
+            console.error('Error stopping macOS audio capture:', error);
+            return { success: false, error: error.message };
+        }
+    });
+
+    ipcMain.handle('close-session', async event => {
+        try {
+            stopMacOSAudioCapture();
+
+            // Clear session params
+            lastSessionParams = null;
+
+            // Cleanup OpenAI client
+            if (openaiClient) {
+                openaiClient = null;
+            }
+
+            if (sessionRef) {
+                sessionRef.current = null;
+            }
+
+            return { success: true };
+        } catch (error) {
+            console.error('Error closing session:', error);
+            return { success: false, error: error.message };
+        }
+    });
+
+    // Conversation history IPC handlers
+    ipcMain.handle('get-current-session', async event => {
+        try {
+            return { success: true, data: getCurrentSessionData() };
+        } catch (error) {
+            console.error('Error getting current session:', error);
+            return { success: false, error: error.message };
+        }
+    });
+
+    ipcMain.handle('start-new-session', async event => {
+        try {
+            initializeNewSession();
+            return { success: true, sessionId: currentSessionId };
+        } catch (error) {
+            console.error('Error starting new session:', error);
+            return { success: false, error: error.message };
+        }
+    });
+
+    ipcMain.handle('update-google-search-setting', async (event, enabled) => {
+        try {
+            console.log('Google Search setting updated to:', enabled);
+            return { success: true };
+        } catch (error) {
+            console.error('Error updating Google Search setting:', error);
+            return { success: false, error: error.message };
+        }
+    });
+}
+
+module.exports = {
+    initializeOpenAISession,
+    sendToRenderer,
+    initializeNewSession,
+    saveConversationTurn,
+    getCurrentSessionData,
+    killExistingSystemAudioDump,
+    startMacOSAudioCapture,
+    convertStereoToMono,
+    stopMacOSAudioCapture,
+    setupOpenAIIpcHandlers,
+    sendMessageToOpenAI,
+    transcribeAudioWithWhisper,
+};

@@ -1,7 +1,8 @@
-const { BrowserWindow, globalShortcut, ipcMain, screen } = require('electron');
+const { BrowserWindow, globalShortcut, ipcMain, screen, Menu } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
 const os = require('os');
+const { readConfig, updateConfigBatch } = require('./config');
 
 let mouseEventsIgnored = false;
 let windowResizing = false;
@@ -11,7 +12,7 @@ const RESIZE_ANIMATION_DURATION = 500; // milliseconds
 function ensureDataDirectories() {
     const homeDir = os.homedir();
     const interviewCrackerDir = path.join(homeDir, 'desire-ai');
-const dataDir = path.join(interviewCrackerDir, 'data');
+    const dataDir = path.join(interviewCrackerDir, 'data');
     const imageDir = path.join(dataDir, 'image');
     const audioDir = path.join(dataDir, 'audio');
 
@@ -124,8 +125,53 @@ function createWindow(sendToRenderer, geminiSessionRef) {
     });
 
     setupWindowIpcHandlers(mainWindow, sendToRenderer, geminiSessionRef);
+    setupMenu();
 
     return mainWindow;
+}
+
+function setupMenu() {
+    const template = [
+        {
+            label: 'Edit',
+            submenu: [
+                { role: 'undo' },
+                { role: 'redo' },
+                { type: 'separator' },
+                { role: 'cut' },
+                { role: 'copy' },
+                { role: 'paste' },
+                { role: 'delete' },
+                { type: 'separator' },
+                { role: 'selectAll' }
+            ]
+        },
+        {
+            label: 'View',
+            submenu: [
+                { role: 'reload' },
+                { role: 'forceReload' },
+                { role: 'toggleDevTools' },
+                { type: 'separator' },
+                { role: 'resetZoom' },
+                { role: 'zoomIn' },
+                { role: 'zoomOut' },
+                { type: 'separator' },
+                { role: 'togglefullscreen' }
+            ]
+        },
+        {
+            label: 'Window',
+            submenu: [
+                { role: 'minimize' },
+                { role: 'zoom' },
+                { role: 'close' }
+            ]
+        }
+    ];
+
+    const menu = Menu.buildFromTemplate(template);
+    Menu.setApplicationMenu(menu);
 }
 
 function getDefaultKeybinds() {
@@ -137,7 +183,7 @@ function getDefaultKeybinds() {
         moveRight: isMac ? 'Alt+Right' : 'Ctrl+Right',
         toggleVisibility: isMac ? 'Cmd+\\' : 'Ctrl+\\',
         toggleClickThrough: isMac ? 'Cmd+M' : 'Ctrl+M',
-        nextStep: isMac ? 'Cmd+Enter' : 'Ctrl+Enter',
+        nextStep: isMac ? 'Cmd+S' : 'Alt+S',
         previousResponse: isMac ? 'Cmd+[' : 'Ctrl+[',
         nextResponse: isMac ? 'Cmd+]' : 'Ctrl+]',
         scrollUp: isMac ? 'Cmd+Shift+Up' : 'Ctrl+Shift+Up',
@@ -232,16 +278,12 @@ function updateGlobalShortcuts(keybinds, mainWindow, sendToRenderer, geminiSessi
     if (keybinds.nextStep) {
         try {
             globalShortcut.register(keybinds.nextStep, async () => {
-                console.log('Next step shortcut triggered');
+                console.log('Next step shortcut triggered:', keybinds.nextStep);
                 try {
-                    // Determine the shortcut key format
-                    const isMac = process.platform === 'darwin';
-                    const shortcutKey = isMac ? 'cmd+enter' : 'ctrl+enter';
-
-                    // Use the new handleShortcut function
+                    // Send the keybind directly to the renderer
                     mainWindow.webContents.executeJavaScript(`
                         if (window.interviewCracker && window.interviewCracker.handleShortcut) {
-  window.interviewCracker.handleShortcut('${shortcutKey}');
+                            window.interviewCracker.handleShortcut('${keybinds.nextStep.toLowerCase()}');
                         } else {
                             console.log('handleShortcut function not available');
                         }
@@ -461,6 +503,14 @@ function setupWindowIpcHandlers(mainWindow, sendToRenderer, geminiSessionRef) {
             console.error('Error updating sizes:', error);
             return { success: false, error: error.message };
         }
+    });
+
+    ipcMain.handle('get-app-config', async () => {
+        return readConfig();
+    });
+
+    ipcMain.handle('set-app-config', async (event, updates) => {
+        return updateConfigBatch(updates);
     });
 }
 
