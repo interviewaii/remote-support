@@ -2,6 +2,9 @@ if (require('electron-squirrel-startup')) {
     process.exit(0);
 }
 
+const path = require('node:path');
+require('dotenv').config({ path: path.join(__dirname, '../.env') });
+
 const { app, BrowserWindow, shell, ipcMain } = require('electron');
 const { createWindow, updateGlobalShortcuts } = require('./utils/window');
 const { setupOpenAIIpcHandlers, stopMacOSAudioCapture, sendToRenderer } = require('./utils/openai');

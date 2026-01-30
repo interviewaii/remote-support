@@ -1,4 +1,5 @@
 const OpenAI = require('openai');
+const Groq = require('groq-sdk');
 const { BrowserWindow, ipcMain } = require('electron');
 const { spawn } = require('child_process');
 const { saveDebugAudio } = require('../audioUtils');
@@ -163,8 +164,9 @@ async function initializeOpenAISession(apiKey, customPrompt = '', resumeContext 
 
     try {
         // Initialize OpenAI client
+        const finalApiKey = apiKey || process.env.OPENAI_API_KEY;
         openaiClient = new OpenAI({
-            apiKey: apiKey,
+            apiKey: finalApiKey,
         });
 
         console.log('Initializing OpenAI session with model: gpt-4o-mini');
@@ -276,7 +278,83 @@ function createWavHeader(dataLength, sampleRate, channels, bitsPerSample) {
     return header;
 }
 
+async function sendMessageToGroq(userMessage) {
+    if (!process.env.GROQ_API_KEY) {
+        console.error('GROQ_API_KEY missing');
+        return;
+    }
+
+    try {
+        const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+
+        // Build conversation messages (system prompt + history)
+        const messages = [
+            {
+                role: 'system',
+                content: getSystemPrompt(
+                    lastSessionParams?.profile || 'interview',
+                    lastSessionParams?.customPrompt || '',
+                    lastSessionParams?.resumeContext || '',
+                    false // Google search not supported on Groq path yet
+                )
+            }
+        ];
+
+        // Add history
+        const MAX_HISTORY_TURNS = 10;
+        const recentHistory = conversationHistory.slice(-MAX_HISTORY_TURNS);
+        recentHistory.forEach(turn => {
+            messages.push({ role: 'user', content: turn.transcription });
+            messages.push({ role: 'assistant', content: turn.ai_response });
+        });
+
+        messages.push({ role: 'user', content: userMessage });
+
+        console.log('Sending message to Groq (Llama 3)...');
+        messageBuffer = '';
+
+        const stream = await groq.chat.completions.create({
+            messages: messages,
+            model: "llama-3.3-70b-versatile",
+            temperature: 0.7,
+            max_tokens: 1024,
+            top_p: 1,
+            stream: true,
+            stop: null
+        });
+
+        currentStream = stream;
+
+        for await (const chunk of stream) {
+            const content = chunk.choices[0]?.delta?.content || '';
+            if (content) {
+                messageBuffer += content;
+                sendToRenderer('update-response-stream', content);
+            }
+        }
+
+        console.log('Groq Response complete:', messageBuffer.substring(0, 50) + '...');
+        sendToRenderer('update-response', messageBuffer);
+
+        if (userMessage && messageBuffer) {
+            saveConversationTurn(userMessage, messageBuffer);
+        }
+
+        sendToRenderer('update-status', 'Listening (Groq)...');
+
+    } catch (error) {
+        console.error('Error sending to Groq:', error);
+        sendToRenderer('update-status', 'Error: ' + error.message);
+    }
+}
+
 async function sendMessageToOpenAI(userMessage) {
+    // HYBRID ROUTING CHECK
+    if (process.env.GROQ_API_KEY) {
+        console.log('Hybrid Mode: Routing chat to Groq...');
+        return sendMessageToGroq(userMessage);
+    }
+
     if (!openaiClient) {
         console.error('OpenAI client not initialized');
         return;

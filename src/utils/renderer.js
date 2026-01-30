@@ -139,8 +139,8 @@ function arrayBufferToBase64(buffer) {
 }
 
 async function initializeGemini(profile = 'interview', language = 'en-US') {
-    // OpenAI API key - replace with your own key
-    const apiKey = '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';
+    // OpenAI API key - loaded from env in main process
+    const apiKey = '';
     const success = await ipcRenderer.invoke('initialize-gemini', apiKey, localStorage.getItem('customPrompt') || '', localStorage.getItem('resumeContext') || '', profile, language);
     if (success) {
         interviewCrackerElement().setStatus('Live');
