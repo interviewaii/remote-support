@@ -15,6 +15,7 @@ let isInitializingSession = false;
 let openaiClient = null;
 let currentStream = null;
 let messageBuffer = '';
+let isGenerating = false; // Lock to prevent overlapping chat requests
 
 // Audio capture variables
 let systemAudioProc = null;
@@ -284,8 +285,17 @@ async function sendMessageToGroq(userMessage) {
         return;
     }
 
+    // Prevent overlapping requests
+    if (isGenerating) {
+        console.log('Skipping message request - already generating response');
+        return;
+    }
+
+    isGenerating = true;
+
     try {
-        const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+        sendToRenderer('update-status', 'Thinking (Groq)...');
+        const groq = new Groq({ apiKey: process.env.GROQ_API_KEY, dangerouslyAllowBrowser: true, timeout: 20000 }); // 20s timeout
 
         // Build conversation messages (system prompt + history)
         const messages = [
@@ -295,34 +305,46 @@ async function sendMessageToGroq(userMessage) {
                     lastSessionParams?.profile || 'interview',
                     lastSessionParams?.customPrompt || '',
                     lastSessionParams?.resumeContext || '',
-                    false // Google search not supported on Groq path yet
+                    false
                 )
             }
         ];
 
-        // Add history
+        // Add history with truncation to prevent context overflow/stuck issues
         const MAX_HISTORY_TURNS = 10;
         const recentHistory = conversationHistory.slice(-MAX_HISTORY_TURNS);
         recentHistory.forEach(turn => {
+            // Truncate very long previous responses (like huge code blocks from screenshots)
+            // to keep context light and fast for Groq
+            let prevResponse = turn.ai_response;
+            if (prevResponse && prevResponse.length > 2000) {
+                prevResponse = prevResponse.substring(0, 2000) + "... [truncated]";
+            }
             messages.push({ role: 'user', content: turn.transcription });
-            messages.push({ role: 'assistant', content: turn.ai_response });
+            messages.push({ role: 'assistant', content: prevResponse });
         });
 
         messages.push({ role: 'user', content: userMessage });
 
-        console.log('Sending message to Groq (Llama 3)...');
+        console.log('Sending message to Groq (Llama 3.3)...');
         messageBuffer = '';
 
-        const stream = await groq.chat.completions.create({
+        // Add explicit timeout race
+        const completionPromise = groq.chat.completions.create({
             messages: messages,
             model: "llama-3.3-70b-versatile",
             temperature: 0.7,
-            max_tokens: 1024,
+            max_tokens: 4096,
             top_p: 1,
             stream: true,
             stop: null
         });
 
+        const timeoutPromise = new Promise((_, reject) =>
+            setTimeout(() => reject(new Error('Groq request timed out')), 20000)
+        );
+
+        const stream = await Promise.race([completionPromise, timeoutPromise]);
         currentStream = stream;
 
         for await (const chunk of stream) {
@@ -333,7 +355,7 @@ async function sendMessageToGroq(userMessage) {
             }
         }
 
-        console.log('Groq Response complete:', messageBuffer.substring(0, 50) + '...');
+        console.log('Groq Response complete length:', messageBuffer.length);
         sendToRenderer('update-response', messageBuffer);
 
         if (userMessage && messageBuffer) {
@@ -345,6 +367,14 @@ async function sendMessageToGroq(userMessage) {
     } catch (error) {
         console.error('Error sending to Groq:', error);
         sendToRenderer('update-status', 'Error: ' + error.message);
+
+        // Auto-recover state
+        setTimeout(() => {
+            sendToRenderer('update-status', 'Listening (Groq)...');
+        }, 3000);
+
+    } finally {
+        isGenerating = false;
     }
 }
 
@@ -602,20 +632,20 @@ function setupOpenAIIpcHandlers(sessionRef) {
             const MIN_CHUNKS = 40;   // 1s minimum
             const MAX_CHUNKS = 600;  // 15s safety maximum
 
-            // Visual indicator for every chunk
-            process.stdout.write('.');
+            // Visual indicator removed for performance
+            // process.stdout.write('.');
 
             // Reset silence timer on every chunk
             if (silenceTimer) clearTimeout(silenceTimer);
 
-            if (receivedAudioBuffer.length >= MAX_CHUNKS && !isTranscribing) {
+            if (receivedAudioBuffer.length >= MAX_CHUNKS && !isTranscribing && !isGenerating) {
                 // Safety fallback: Max buffer reached (15s)
                 console.log(`\n[MAX BUFFER] Processing ${receivedAudioBuffer.length} chunks...`);
                 processAudioBuffer();
             } else if (receivedAudioBuffer.length >= MIN_CHUNKS) {
                 // After MIN_CHUNKS, set a 2-second timer - GUARANTEED to fire
                 silenceTimer = setTimeout(() => {
-                    if (receivedAudioBuffer.length >= MIN_CHUNKS && !isTranscribing) {
+                    if (receivedAudioBuffer.length >= MIN_CHUNKS && !isTranscribing && !isGenerating) {
                         console.log(`\n[TIMER] Processing ${receivedAudioBuffer.length} chunks...`);
                         processAudioBuffer().catch(err => console.error('Error:', err));
                     }
@@ -650,7 +680,7 @@ function setupOpenAIIpcHandlers(sessionRef) {
     }
 
     async function processAudioBuffer() {
-        if (receivedAudioBuffer.length === 0 || isTranscribing) return;
+        if (receivedAudioBuffer.length === 0 || isTranscribing || isGenerating) return;
 
         const combinedBuffer = Buffer.concat(receivedAudioBuffer);
         const chunkCount = receivedAudioBuffer.length;
@@ -757,7 +787,15 @@ function setupOpenAIIpcHandlers(sessionRef) {
             if (prompt && imageAnalysis) {
                 saveConversationTurn("(Screenshot Analyzed)", imageAnalysis);
                 // Mark timestamp to prevent redundant audio responses
+                // Mark timestamp to prevent redundant audio responses
                 lastImageAnalysisTimestamp = Date.now();
+            }
+
+            // Restore status to listening (Groq or OpenAI)
+            if (process.env.GROQ_API_KEY) {
+                sendToRenderer('update-status', 'Listening (Groq)...');
+            } else {
+                sendToRenderer('update-status', 'Listening...');
             }
 
             return { success: true };
