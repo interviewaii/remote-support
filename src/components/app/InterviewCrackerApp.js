@@ -182,6 +182,7 @@ export class InterviewCrackerApp extends LitElement {
         responses: { type: Array },
         currentResponseIndex: { type: Number },
         isListening: { type: Boolean },
+        streamingContent: { type: String },
         selectedScreenshotInterval: { type: String },
         selectedImageQuality: { type: String },
         layoutMode: { type: String },
@@ -210,6 +211,7 @@ export class InterviewCrackerApp extends LitElement {
         this.isDarkMode = localStorage.getItem('isDarkMode') !== 'false'; // Default to dark mode
         this.responses = [];
         this.currentResponseIndex = -1;
+        this.streamingContent = '';
         this.isListening = false;
         this._viewInstances = new Map();
         this._isClickThrough = false;
@@ -372,7 +374,10 @@ export class InterviewCrackerApp extends LitElement {
         if (window.require) {
             const { ipcRenderer } = window.require('electron');
             ipcRenderer.on('update-response', (_, response) => {
-                this.setResponse(response);
+                this.setResponse(response, true); // final true means it's the finished response
+            });
+            ipcRenderer.on('update-response-stream', (_, chunk) => {
+                this.handleStreamingChunk(chunk);
             });
             ipcRenderer.on('update-transcription-partial', (_, partialText) => {
                 // Update the status with partial transcription to show user what's captured
@@ -456,10 +461,16 @@ export class InterviewCrackerApp extends LitElement {
         this.statusText = text;
     }
 
-    setResponse(response) {
+    handleStreamingChunk(chunk) {
+        this.streamingContent += chunk;
+        this.requestUpdate();
+    }
+
+    setResponse(response, isFinal = false) {
         // Simple deduplication check
         if (this.responses.length > 0 && this.responses[this.responses.length - 1] === response) {
             console.log('Skipped duplicate response in UI');
+            this.streamingContent = ''; // Clear stream if it matched final
             return;
         }
 
@@ -473,7 +484,13 @@ export class InterviewCrackerApp extends LitElement {
             }
         }
 
-        this.responses.push(response);
+        // Use spread to trigger Lit update properly
+        this.responses = [...this.responses, response];
+
+        // Reset streaming once final message is added
+        if (isFinal) {
+            this.streamingContent = '';
+        }
 
         // Track response for license limits (only if activated)
         if (this.isActivated) {
@@ -849,6 +866,7 @@ export class InterviewCrackerApp extends LitElement {
                 return html`
                     <assistant-view
                         .responses=${this.responses}
+                        .streamingContent=${this.streamingContent}
                         .currentResponseIndex=${this.currentResponseIndex}
                         .selectedProfile=${this.selectedProfile}
                         .onSendText=${message => this.handleSendText(message)}

@@ -600,6 +600,41 @@ export class AssistantView extends LitElement {
             color: #d16969;
         }
 
+        .response-item {
+            margin-bottom: 10px;
+            padding: 5px 0;
+        }
+
+        .response-item.streaming {
+            border-left: 2px solid var(--accent-color);
+            padding-left: 15px;
+            background: rgba(127, 188, 251, 0.03);
+            border-radius: 0 8px 8px 0;
+        }
+
+        /* Disable animations for non-streaming paragraphs to prevent flicker during updates */
+        .response-item:not(.streaming) p,
+        .response-item:not(.streaming) li,
+        .response-item:not(.streaming) h1,
+        .response-item:not(.streaming) h2,
+        .response-item:not(.streaming) h3 {
+            animation: none !important;
+        }
+
+        .response-time-badge {
+            display: inline-block;
+            margin-top: 12px;
+            padding: 4px 10px;
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid var(--card-border);
+            border-radius: 12px;
+            font-size: 11px;
+            font-weight: 600;
+            color: var(--accent-color);
+            letter-spacing: 0.5px;
+            text-transform: uppercase;
+        }
+
         .response-container .hljs-symbol {
             color: #dcdcaa;
         }
@@ -792,6 +827,7 @@ export class AssistantView extends LitElement {
 
     static properties = {
         responses: { type: Array },
+        streamingContent: { type: String },
         currentResponseIndex: { type: Number },
         selectedProfile: { type: String },
         onSendText: { type: Function },
@@ -801,6 +837,7 @@ export class AssistantView extends LitElement {
     constructor() {
         super();
         this.responses = [];
+        this.streamingContent = '';
         this.currentResponseIndex = -1;
         this.selectedProfile = 'interview';
         this.onSendText = () => { };
@@ -828,25 +865,30 @@ export class AssistantView extends LitElement {
         // Check if marked is available
         if (typeof window !== 'undefined' && window.marked) {
             try {
+                // Pre-process content to handle response time badge
+                let processedContent = content;
+                if (content.includes('*[Response Time:')) {
+                    processedContent = content.replace(/\*\[Response Time: (.*?)s\]\*/g,
+                        '<div class="response-time-badge">⚡ Response Time: $1s</div>');
+                }
+
                 // Configure marked for better security and formatting
                 window.marked.setOptions({
                     breaks: true,
                     gfm: true,
-                    sanitize: true, // Never trust AI responses for HTML!
+                    sanitize: false, // We handle processing and rely on it for our badge HTML
                 });
-                let rendered = window.marked.parse(content);
+                let rendered = window.marked.parse(processedContent);
 
                 // Add copy buttons to code blocks
                 rendered = this.addCopyButtonsToCodeBlocks(rendered);
 
-                console.log('Markdown rendered successfully');
                 return rendered;
             } catch (error) {
                 console.warn('Error parsing markdown:', error);
                 return content; // Fallback to plain text
             }
         }
-        console.log('Marked not available, using plain text');
         return content; // Fallback if marked is not available
     }
 
@@ -1091,7 +1133,9 @@ export class AssistantView extends LitElement {
 
     updated(changedProperties) {
         super.updated(changedProperties);
-        if (changedProperties.has('responses') || changedProperties.has('currentResponseIndex')) {
+        if (changedProperties.has('responses') ||
+            changedProperties.has('currentResponseIndex') ||
+            changedProperties.has('streamingContent')) {
             this.updateResponseContent();
         }
     }
@@ -1100,10 +1144,10 @@ export class AssistantView extends LitElement {
         console.log('updateResponseContent called');
         const container = this.shadowRoot.querySelector('#responseContainer');
         if (container) {
-            if (this.responses.length === 0) {
+            if (this.responses.length === 0 && !this.streamingContent) {
                 container.innerHTML = this.renderMarkdown(`Hello! How can I help you today?`);
             } else {
-                const renderedResponses = this.responses.map((response, index) => {
+                let renderedResponses = this.responses.map((response, index) => {
                     return `
                         <div class="response-item" data-index="${index}">
                             ${this.renderMarkdown(response)}
@@ -1111,6 +1155,17 @@ export class AssistantView extends LitElement {
                         ${index < this.responses.length - 1 ? '<hr class="response-separator"/>' : ''}
                     `;
                 }).join('');
+
+                // Append streaming content if active
+                if (this.streamingContent) {
+                    renderedResponses += `
+                        ${this.responses.length > 0 ? '<hr class="response-separator"/>' : ''}
+                        <div class="response-item streaming">
+                            ${this.renderMarkdown(this.streamingContent + ' ▮')}
+                        </div>
+                    `;
+                }
+
                 container.innerHTML = renderedResponses;
 
                 // Scroll to bottom after update

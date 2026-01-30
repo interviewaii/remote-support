@@ -164,51 +164,64 @@ async function initializeOpenAISession(apiKey, customPrompt = '', resumeContext 
     }
 
     try {
-        // Initialize OpenAI client
+        // Initialize OpenAI if key is present (required for Vision)
         const finalApiKey = apiKey || process.env.OPENAI_API_KEY;
-        openaiClient = new OpenAI({
-            apiKey: finalApiKey,
-        });
+        if (finalApiKey) {
+            openaiClient = new OpenAI({
+                apiKey: finalApiKey,
+            });
+            console.log('OpenAI initialized for Vision tasks.');
+        } else {
+            console.warn('OpenAI API Key missing - Vision tasks will be disabled.');
+        }
 
-        console.log('Initializing OpenAI session with model: gpt-4o-mini');
-        console.log('API Key (masked):', apiKey ? `${apiKey.substring(0, 7)}...${apiKey.substring(apiKey.length - 4)}` : 'undefined');
+        // Initialize Groq if key is present (preferred for Chat)
+        if (process.env.GROQ_API_KEY) {
+            console.log('Groq initialized for Hybrid Chat mode.');
+        }
 
         // Get enabled tools
         const googleSearchEnabled = await getStoredSetting('googleSearchEnabled', 'true');
         const systemPrompt = getSystemPrompt(profile, customPrompt, resumeContext, googleSearchEnabled === 'true');
-
-        console.log('System Prompt Length:', systemPrompt ? systemPrompt.length : 0);
-        console.log('Resume Context Length:', resumeContext ? resumeContext.length : 0);
 
         // Initialize new conversation session (only if not reconnecting)
         if (!isReconnection) {
             initializeNewSession();
         }
 
-        // Test the connection with a simple request
-        await openaiClient.chat.completions.create({
-            model: 'gpt-4o-mini',
-            messages: [{ role: 'system', content: 'Test connection' }],
-            max_tokens: 1,
-        });
+        // Test connectivity based on mode
+        if (process.env.GROQ_API_KEY) {
+            // Test Groq
+            const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+            await groq.chat.completions.create({
+                messages: [{ role: 'user', content: 'hi' }],
+                model: "llama-3.3-70b-versatile",
+                max_tokens: 1,
+            });
+            console.log('Groq connectivity verified.');
+        } else if (openaiClient) {
+            // Test OpenAI
+            await openaiClient.chat.completions.create({
+                model: 'gpt-4o-mini',
+                messages: [{ role: 'system', content: 'Test connection' }],
+                max_tokens: 1,
+            });
+            console.log('OpenAI connectivity verified.');
+        } else {
+            throw new Error('Neither Groq nor OpenAI API keys are configured.');
+        }
 
-        console.log('OpenAI session initialized successfully');
-        sendToRenderer('update-status', 'Session connected');
+        sendToRenderer('update-status', process.env.GROQ_API_KEY ? 'Session connected (Groq)' : 'Session connected');
 
         isInitializingSession = false;
         sendToRenderer('session-initializing', false);
 
         return true;
     } catch (error) {
-        console.error('Failed to initialize OpenAI session:', error);
-        if (error.message) {
-            console.error('Error message:', error.message);
-        }
-
+        console.error('Failed to initialize AI session:', error);
         isInitializingSession = false;
         sendToRenderer('session-initializing', false);
         sendToRenderer('update-status', 'Error: ' + error.message);
-
         return false;
     }
 }
