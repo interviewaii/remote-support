@@ -225,6 +225,94 @@ export class InterviewCrackerApp extends LitElement {
 
         // Sync theme state with localStorage
         this.syncThemeState();
+
+        // Initialize Web Speech API for FREE real-time transcription
+        this.initWebSpeechAPI();
+    }
+
+    initWebSpeechAPI() {
+        // Check for Web Speech API support
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        if (!SpeechRecognition) {
+            console.warn('Web Speech API not supported in this browser');
+            return;
+        }
+
+        this.speechRecognition = new SpeechRecognition();
+        this.speechRecognition.continuous = true; // Keep listening
+        this.speechRecognition.interimResults = true; // Real-time word-by-word
+        this.speechRecognition.lang = this.selectedLanguage || 'en-US';
+        this.speechRecognition.maxAlternatives = 1;
+
+        this.currentTranscript = ''; // Accumulate full sentence
+        this.finalTranscript = ''; // Store finalized text
+
+        this.speechRecognition.onresult = (event) => {
+            let interimTranscript = '';
+
+            for (let i = event.resultIndex; i < event.results.length; i++) {
+                const transcript = event.results[i][0].transcript;
+                if (event.results[i].isFinal) {
+                    this.finalTranscript += transcript + ' ';
+                    console.log(`[FINAL] "${transcript}"`);
+                    // Send final transcript to OpenAI for response
+                    this.sendTranscriptToOpenAI(transcript.trim());
+                } else {
+                    interimTranscript += transcript;
+                }
+            }
+
+            // Update status with real-time transcription
+            if (interimTranscript) {
+                this.setStatus(`Listening: "${interimTranscript}..."`);
+                console.log(`[INTERIM] "${interimTranscript}"`);
+            }
+        };
+
+        this.speechRecognition.onerror = (event) => {
+            console.error('Speech recognition error:', event.error);
+            if (event.error === 'no-speech') {
+                // Restart on no-speech error
+                this.restartSpeechRecognition();
+            }
+        };
+
+        this.speechRecognition.onend = () => {
+            // Auto-restart if session is active
+            if (this.sessionActive && this.isListening) {
+                console.log('Speech recognition ended, restarting...');
+                this.restartSpeechRecognition();
+            }
+        };
+
+        console.log('Web Speech API initialized');
+    }
+
+    restartSpeechRecognition() {
+        if (this.speechRecognition && this.sessionActive && this.isListening) {
+            try {
+                this.speechRecognition.start();
+            } catch (e) {
+                // Already started
+            }
+        }
+    }
+
+    async sendTranscriptToOpenAI(text) {
+        if (!text || text.trim().length === 0) return;
+
+        console.log(`Sending to OpenAI: "${text}"`);
+        this.setStatus('Processing...');
+
+        if (window.require) {
+            const { ipcRenderer } = window.require('electron');
+            try {
+                await ipcRenderer.invoke('send-text-message', text);
+            } catch (error) {
+                console.error('Error sending to OpenAI:', error);
+                this.setStatus('Error: ' + error.message);
+            }
+        }
     }
 
     async syncConfigWithFile() {
@@ -286,6 +374,10 @@ export class InterviewCrackerApp extends LitElement {
             ipcRenderer.on('update-response', (_, response) => {
                 this.setResponse(response);
             });
+            ipcRenderer.on('update-transcription-partial', (_, partialText) => {
+                // Update the status with partial transcription to show user what's captured
+                this.setStatus(`Listening: "${partialText}..."`);
+            });
             ipcRenderer.on('update-status', (_, status) => {
                 this.setStatus(status);
             });
@@ -307,6 +399,7 @@ export class InterviewCrackerApp extends LitElement {
         if (window.require) {
             const { ipcRenderer } = window.require('electron');
             ipcRenderer.removeAllListeners('update-response');
+            ipcRenderer.removeAllListeners('update-transcription-partial');
             ipcRenderer.removeAllListeners('update-status');
             ipcRenderer.removeAllListeners('click-through-toggled');
         }
@@ -548,8 +641,19 @@ export class InterviewCrackerApp extends LitElement {
         this.responses = [];
         this.currentResponseIndex = -1;
         this.isListening = true;
+        this.sessionActive = true;
         this.startTime = Date.now();
         this.currentView = 'assistant';
+
+        // Start Web Speech API recognition
+        if (this.speechRecognition) {
+            try {
+                this.speechRecognition.start();
+                console.log('Web Speech recognition started');
+            } catch (e) {
+                console.warn('Speech recognition may already be running:', e);
+            }
+        }
     }
 
     async handleAPIKeyHelp() {
@@ -749,6 +853,7 @@ export class InterviewCrackerApp extends LitElement {
                         .selectedProfile=${this.selectedProfile}
                         .onSendText=${message => this.handleSendText(message)}
                         @response-index-changed=${this.handleResponseIndexChanged}
+                        @back-clicked=${() => this.handleBackClick()}
                     ></assistant-view>
                 `;
 
@@ -764,6 +869,19 @@ export class InterviewCrackerApp extends LitElement {
             default:
                 return html`<div>Unknown view: ${this.currentView}</div>`;
         }
+    }
+
+    handleBackClick() {
+        console.log('Back clicked - returning to main menu');
+
+        // Stop listening/recording
+        if (this.isListening) {
+            this.handleToggleListening();
+        }
+
+        this.sessionActive = false;
+        this.currentView = 'main';
+        this.requestUpdate();
     }
 
     render() {

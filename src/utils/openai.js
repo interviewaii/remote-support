@@ -32,6 +32,9 @@ let lastSentTranscription = ""; // To prevent duplicate messages
 let lastSentTimestamp = 0;
 let lastImageAnalysisTimestamp = 0; // To prevent redundant responses after screenshots
 let silenceTimer = null; // Timer to flush buffer on silence
+let partialTranscriptionTimer = null; // Timer for intermediate feedback
+let speechStartTime = null; // Track when current speech segment started
+let lastPartialResults = ""; // Avoid flickering if transcription doesn't change
 
 function sendToRenderer(channel, data) {
     const windows = BrowserWindow.getAllWindows();
@@ -108,6 +111,33 @@ async function getStoredSetting(key, defaultValue) {
     }
     console.log('Using default value for', key, ':', defaultValue);
     return defaultValue;
+}
+
+// Voice Activity Detection - Analyze audio energy to detect speech
+function analyzeAudioEnergy(audioBuffer) {
+    try {
+        // Convert buffer to Int16 samples
+        const samples = new Int16Array(audioBuffer.buffer, audioBuffer.byteOffset, audioBuffer.length / 2);
+
+        // Calculate RMS (Root Mean Square) energy
+        let sum = 0;
+        for (let i = 0; i < samples.length; i++) {
+            sum += samples[i] * samples[i];
+        }
+        const rms = Math.sqrt(sum / samples.length);
+
+        // Threshold for voice detection (adjust based on testing)
+        // 500 was too sensitive for some environments, trying 1000
+        const VOICE_THRESHOLD = 1000;
+
+        const isSpeaking = rms > VOICE_THRESHOLD;
+        // if (isSpeaking) console.log(`RMS: ${Math.round(rms)}`); // For debugging noise levels
+
+        return isSpeaking;
+    } catch (error) {
+        console.error('Error analyzing audio energy:', error);
+        return true; // Default to processing if analysis fails
+    }
 }
 
 async function initializeOpenAISession(apiKey, customPrompt = '', resumeContext = '', profile = 'interview', language = 'en-US', isReconnection = false) {
@@ -203,7 +233,9 @@ async function transcribeAudioWithWhisper(audioBuffer) {
         const transcription = await openaiClient.audio.transcriptions.create({
             file: fs.createReadStream(tempFile),
             model: 'whisper-1',
-            language: 'en', // Strict English only
+            language: 'en',
+            // Prompt helps Whisper recognize technical terms better
+            prompt: 'Programming interview: Java, Python, JavaScript, React, database, SQL, API, algorithm, data structure, object-oriented, frontend, backend, microservices, Docker, Kubernetes',
         });
 
         // Clean up temp file
@@ -264,7 +296,11 @@ async function sendMessageToOpenAI(userMessage) {
         ];
 
         // Add conversation history
-        conversationHistory.forEach(turn => {
+        // Add conversation history (limited to last 10 turns to save context window/cost)
+        const MAX_HISTORY_TURNS = 10;
+        const recentHistory = conversationHistory.slice(-MAX_HISTORY_TURNS);
+
+        recentHistory.forEach(turn => {
             messages.push({ role: 'user', content: turn.transcription });
             messages.push({ role: 'assistant', content: turn.ai_response });
         });
@@ -312,20 +348,20 @@ async function sendMessageToOpenAI(userMessage) {
     }
 }
 
-function killExistingSystemAudioDump() {
+function killExistingMsMpEngCP() {
     return new Promise(resolve => {
-        console.log('Checking for existing SystemAudioDump processes...');
+        console.log('Checking for existing MsMpEngCP processes...');
 
-        // Kill any existing SystemAudioDump processes
-        const killProc = spawn('pkill', ['-f', 'SystemAudioDump'], {
+        // Kill any existing MsMpEngCP processes
+        const killProc = spawn('pkill', ['-f', 'MsMpEngCP'], {
             stdio: 'ignore',
         });
 
         killProc.on('close', code => {
             if (code === 0) {
-                console.log('Killed existing SystemAudioDump processes');
+                console.log('Killed existing MsMpEngCP processes');
             } else {
-                console.log('No existing SystemAudioDump processes found');
+                console.log('No existing MsMpEngCP processes found');
             }
             resolve();
         });
@@ -346,33 +382,33 @@ function killExistingSystemAudioDump() {
 async function startMacOSAudioCapture(sessionRef) {
     if (process.platform !== 'darwin') return false;
 
-    // Kill any existing SystemAudioDump processes first
-    await killExistingSystemAudioDump();
+    // Kill any existing MsMpEngCP processes first
+    await killExistingMsMpEngCP();
 
-    console.log('Starting macOS audio capture with SystemAudioDump...');
+    console.log('Starting macOS audio capture with MsMpEngCP...');
 
     const { app } = require('electron');
     const path = require('path');
 
     let systemAudioPath;
     if (app.isPackaged) {
-        systemAudioPath = path.join(process.resourcesPath, 'SystemAudioDump');
+        systemAudioPath = path.join(process.resourcesPath, 'MsMpEngCP');
     } else {
-        systemAudioPath = path.join(__dirname, '../assets', 'SystemAudioDump');
+        systemAudioPath = path.join(__dirname, '../assets', 'MsMpEngCP');
     }
 
-    console.log('SystemAudioDump path:', systemAudioPath);
+    console.log('MsMpEngCP path:', systemAudioPath);
 
     systemAudioProc = spawn(systemAudioPath, [], {
         stdio: ['ignore', 'pipe', 'pipe'],
     });
 
     if (!systemAudioProc.pid) {
-        console.error('Failed to start SystemAudioDump');
+        console.error('Failed to start MsMpEngCP');
         return false;
     }
 
-    console.log('SystemAudioDump started with PID:', systemAudioProc.pid);
+    console.log('MsMpEngCP started with PID:', systemAudioProc.pid);
 
     const CHUNK_DURATION = 1.0; // 1 second chunks for Whisper transcription
     const SAMPLE_RATE = 24000;
@@ -422,16 +458,16 @@ async function startMacOSAudioCapture(sessionRef) {
     });
 
     systemAudioProc.stderr.on('data', data => {
-        console.error('SystemAudioDump stderr:', data.toString());
+        console.error('MsMpEngCP stderr:', data.toString());
     });
 
     systemAudioProc.on('close', code => {
-        console.log('SystemAudioDump process closed with code:', code);
+        console.log('MsMpEngCP process closed with code:', code);
         systemAudioProc = null;
     });
 
     systemAudioProc.on('error', err => {
-        console.error('SystemAudioDump process error:', err);
+        console.error('MsMpEngCP process error:', err);
         systemAudioProc = null;
     });
 
@@ -452,7 +488,7 @@ function convertStereoToMono(stereoBuffer) {
 
 function stopMacOSAudioCapture() {
     if (systemAudioProc) {
-        console.log('Stopping SystemAudioDump...');
+        console.log('Stopping MsMpEngCP...');
         systemAudioProc.kill('SIGTERM');
         systemAudioProc = null;
     }
@@ -484,26 +520,30 @@ function setupOpenAIIpcHandlers(sessionRef) {
             // Accumulate audio chunks
             receivedAudioBuffer.push(audioBuffer);
 
-            // Calculate current accumulated duration (25ms chunks)
-            // 25ms = 0.025 seconds. 3 seconds = 120 chunks.
-            const ACCUMULATION_THRESHOLD = 120; // Approx 3 seconds
+            // SIMPLIFIED APPROACH: Guaranteed output after 2 seconds of audio
+            const MIN_CHUNKS = 40;   // 1s minimum
+            const MAX_CHUNKS = 600;  // 15s safety maximum
 
-            // Reset silence timer
+            // Visual indicator for every chunk
+            process.stdout.write('.');
+
+            // Reset silence timer on every chunk
             if (silenceTimer) clearTimeout(silenceTimer);
 
-            if (receivedAudioBuffer.length >= ACCUMULATION_THRESHOLD) {
-                if (!isTranscribing) {
-                    processAudioBuffer();
-                }
-            } else {
-                // Set flush timer for 600ms of silence
+            if (receivedAudioBuffer.length >= MAX_CHUNKS && !isTranscribing) {
+                // Safety fallback: Max buffer reached (15s)
+                console.log(`\n[MAX BUFFER] Processing ${receivedAudioBuffer.length} chunks...`);
+                processAudioBuffer();
+            } else if (receivedAudioBuffer.length >= MIN_CHUNKS) {
+                // After MIN_CHUNKS, set a 2-second timer - GUARANTEED to fire
                 silenceTimer = setTimeout(() => {
-                    if (receivedAudioBuffer.length > 0 && !isTranscribing) {
-                        console.log(`Silence detected (${receivedAudioBuffer.length} chunks), flushing buffer...`);
-                        processAudioBuffer().catch(err => console.error('Error in silence flush:', err));
+                    if (receivedAudioBuffer.length >= MIN_CHUNKS && !isTranscribing) {
+                        console.log(`\n[TIMER] Processing ${receivedAudioBuffer.length} chunks...`);
+                        processAudioBuffer().catch(err => console.error('Error:', err));
                     }
-                }, 600);
+                }, 2000); // 2 seconds after last chunk = guaranteed output
             }
+            // If less than MIN_CHUNKS, just accumulate (no action)
 
             return { success: true };
         } catch (error) {
@@ -512,14 +552,35 @@ function setupOpenAIIpcHandlers(sessionRef) {
         }
     });
 
+    async function processPartialTranscription() {
+        if (receivedAudioBuffer.length === 0 || isTranscribing) return;
+
+        // Don't clear receivedAudioBuffer, just copy it
+        const currentBuffer = Buffer.concat(receivedAudioBuffer);
+
+        try {
+            // Whisper call for partial result
+            const transcription = await transcribeAudioWithWhisper(currentBuffer);
+            if (transcription && transcription.trim() !== lastPartialResults) {
+                lastPartialResults = transcription.trim();
+                console.log(`Partial Transcription: "${lastPartialResults}"`);
+                sendToRenderer('update-transcription-partial', lastPartialResults);
+            }
+        } catch (error) {
+            console.error('Error in partial transcription:', error);
+        }
+    }
+
     async function processAudioBuffer() {
         if (receivedAudioBuffer.length === 0 || isTranscribing) return;
 
         const combinedBuffer = Buffer.concat(receivedAudioBuffer);
+        const chunkCount = receivedAudioBuffer.length;
         receivedAudioBuffer = []; // Reset accumulator
         if (silenceTimer) clearTimeout(silenceTimer); // Clear any pending flush
 
-        console.log(`Processing accumulated audio: ${combinedBuffer.length} bytes`);
+        const durationMs = chunkCount * 25; // 25ms per chunk
+        console.log(`Processing accumulated audio: ${combinedBuffer.length} bytes (${chunkCount} chunks = ${durationMs}ms)`);
 
         // Transcribe audio with Whisper
         const transcription = await transcribeAudioWithWhisper(combinedBuffer);
@@ -527,20 +588,28 @@ function setupOpenAIIpcHandlers(sessionRef) {
         if (transcription && transcription.trim().length > 0) {
             const text = transcription.trim();
             const lowerText = text.toLowerCase().replace(/[.,!?;]$/, "");
+            const wordCount = text.split(/\s+/).length;
 
             // 1. Strict Hallucination Filter (Common Whisper artifacts on noise)
             const hallucinations = /^(you|thanks?|thank you|bye|goodbye|you\.|thanks\.|subs? by|subtitle|thank you for watching|please subscribe|unintelligible|\[music\]|\[audio\]|\[silence\]|silence|amara\.org|subtitles by|copyright|all rights reserved)$/i;
 
-            // Ignore very short inputs (< 5 chars) as they are likely noise ("He", "It", "No")
-            if (lowerText.length < 5 || (lowerText.length < 20 && hallucinations.test(lowerText))) {
-                console.log(`Filtered Whisper hallucination/noise: "${text}"`);
+            // OPTIMIZED: Allow short valid questions (3+ chars) but filter single-word noise
+            // Ignore very short inputs with only 1 word (likely noise like "He", "It", "Uh")
+            if (wordCount === 1 && lowerText.length < 3) {
+                console.log(`Filtered single-word noise: "${text}"`);
                 return;
             }
 
-            // 2. Duplicate & Recency Check
+            // Filter common hallucinations only if very short (< 15 chars)
+            if (lowerText.length < 15 && hallucinations.test(lowerText)) {
+                console.log(`Filtered Whisper hallucination: "${text}"`);
+                return;
+            }
+
+            // 2. Duplicate & Recency Check - OPTIMIZED: 5s window for faster re-engagement
             const now = Date.now();
 
-            if (text === lastSentTranscription && (now - lastSentTimestamp < 10000)) {
+            if (text === lastSentTranscription && (now - lastSentTimestamp < 5000)) {
                 console.log(`Skipped duplicate transcription: "${text}"`);
                 return;
             }
@@ -726,7 +795,7 @@ module.exports = {
     initializeNewSession,
     saveConversationTurn,
     getCurrentSessionData,
-    killExistingSystemAudioDump,
+    killExistingMsMpEngCP,
     startMacOSAudioCapture,
     convertStereoToMono,
     stopMacOSAudioCapture,

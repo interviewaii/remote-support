@@ -349,6 +349,19 @@ function updateGlobalShortcuts(keybinds, mainWindow, sendToRenderer, geminiSessi
             console.error(`Failed to register scrollDown (${keybinds.scrollDown}):`, error);
         }
     }
+
+    // EMERGENCY CLOSE: Ctrl+Delete (Cmd+Delete on Mac)
+    const emergencyCloseKey = process.platform === 'darwin' ? 'Cmd+Delete' : 'Ctrl+Delete';
+    try {
+        globalShortcut.register(emergencyCloseKey, () => {
+            console.log('EMERGENCY CLOSE TRIGGERED');
+            const { app } = require('electron');
+            app.quit();
+        });
+        console.log(`Registered Emergency Close: ${emergencyCloseKey}`);
+    } catch (error) {
+        console.error(`Failed to register Emergency Close (${emergencyCloseKey}):`, error);
+    }
 }
 
 function setupWindowIpcHandlers(mainWindow, sendToRenderer, geminiSessionRef) {
@@ -361,6 +374,12 @@ function setupWindowIpcHandlers(mainWindow, sendToRenderer, geminiSessionRef) {
     ipcMain.handle('window-minimize', () => {
         if (!mainWindow.isDestroyed()) {
             mainWindow.minimize();
+        }
+    });
+
+    ipcMain.handle('window-close', () => {
+        if (!mainWindow.isDestroyed()) {
+            mainWindow.close();
         }
     });
 

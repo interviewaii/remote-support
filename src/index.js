@@ -16,8 +16,8 @@ function createMainWindow() {
 
 app.whenReady().then(() => {
     createMainWindow();
+    setupGeneralIpcHandlers(); // Register general handlers FIRST
     setupOpenAIIpcHandlers(openaiSessionRef);
-    setupGeneralIpcHandlers();
 });
 
 app.on('window-all-closed', () => {

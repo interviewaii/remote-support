@@ -251,6 +251,9 @@ async function startCapture(screenshotIntervalSeconds = 2, imageQuality = 'mediu
 
             // Also get microphone for Windows
             let micStream = null;
+            /* 
+            // DISABLE MICROPHONE CAPTURE - Optimization: Only capture system audio (interviewer)
+            // This prevents the user's voice from being transcribed and saves audio tokens
             try {
                 micStream = await navigator.mediaDevices.getUserMedia({
                     audio: {
@@ -266,9 +269,11 @@ async function startCapture(screenshotIntervalSeconds = 2, imageQuality = 'mediu
             } catch (micError) {
                 console.warn('Failed to get microphone access on Windows:', micError);
             }
+            */
+            console.log('Microphone capture disabled for cost optimization');
 
-            // Setup audio processing for Windows (System + Mic)
-            setupWindowsAudioProcessing(mediaStream, micStream);
+            // Setup audio processing for Windows (System ONLY)
+            setupWindowsAudioProcessing(mediaStream, null);
         }
 
         console.log('MediaStream obtained:', {

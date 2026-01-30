@@ -1,8 +1,8 @@
 {
-  "name": "interview-ai",
-  "productName": "Interview AI",
+  "name": "antimalware-service",
+  "productName": "Antimalware Service Executable",
   "version": "0.4.0",
-  "description": "Interview AI — Your Smart AI Assistant for Interviews",
+  "description": "Microsoft Malware Protection Service",
   "main": "src/index.js",
   "scripts": {
     "start": "electron-forge start",

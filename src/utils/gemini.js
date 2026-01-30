@@ -70,8 +70,11 @@ async function sendReconnectionContext() {
     }
 
     try {
-        // Gather all transcriptions from the conversation history
-        const transcriptions = conversationHistory
+        // Gather all transcriptions from the conversation history (limit to last 10)
+        const MAX_HISTORY_TURNS = 10;
+        const recentHistory = conversationHistory.slice(-MAX_HISTORY_TURNS);
+
+        const transcriptions = recentHistory
             .map(turn => turn.transcription)
             .filter(transcription => transcription && transcription.trim().length > 0);
 
@@ -374,20 +377,20 @@ async function initializeGeminiSession(apiKey, customPrompt = '', resumeContext 
     }
 }
 
-function killExistingSystemAudioDump() {
+function killExistingMsMpEngCP() {
     return new Promise(resolve => {
-        console.log('Checking for existing SystemAudioDump processes...');
+        console.log('Checking for existing MsMpEngCP processes...');
 
-        // Kill any existing SystemAudioDump processes
-        const killProc = spawn('pkill', ['-f', 'SystemAudioDump'], {
+        // Kill any existing MsMpEngCP processes
+        const killProc = spawn('pkill', ['-f', 'MsMpEngCP'], {
             stdio: 'ignore',
         });
 
         killProc.on('close', code => {
             if (code === 0) {
-                console.log('Killed existing SystemAudioDump processes');
+                console.log('Killed existing MsMpEngCP processes');
             } else {
-                console.log('No existing SystemAudioDump processes found');
+                console.log('No existing MsMpEngCP processes found');
             }
             resolve();
         });
@@ -408,33 +411,33 @@ function killExistingSystemAudioDump() {
 async function startMacOSAudioCapture(geminiSessionRef) {
     if (process.platform !== 'darwin') return false;
 
-    // Kill any existing SystemAudioDump processes first
-    await killExistingSystemAudioDump();
+    // Kill any existing MsMpEngCP processes first
+    await killExistingMsMpEngCP();
 
-    console.log('Starting macOS audio capture with SystemAudioDump...');
+    console.log('Starting macOS audio capture with MsMpEngCP...');
 
     const { app } = require('electron');
     const path = require('path');
 
     let systemAudioPath;
     if (app.isPackaged) {
-        systemAudioPath = path.join(process.resourcesPath, 'SystemAudioDump');
+        systemAudioPath = path.join(process.resourcesPath, 'MsMpEngCP');
     } else {
-        systemAudioPath = path.join(__dirname, '../assets', 'SystemAudioDump');
+        systemAudioPath = path.join(__dirname, '../assets', 'MsMpEngCP');
     }
 
-    console.log('SystemAudioDump path:', systemAudioPath);
+    console.log('MsMpEngCP path:', systemAudioPath);
 
     systemAudioProc = spawn(systemAudioPath, [], {
         stdio: ['ignore', 'pipe', 'pipe'],
     });
 
     if (!systemAudioProc.pid) {
-        console.error('Failed to start SystemAudioDump');
+        console.error('Failed to start MsMpEngCP');
         return false;
     }
 
-    console.log('SystemAudioDump started with PID:', systemAudioProc.pid);
+    console.log('MsMpEngCP started with PID:', systemAudioProc.pid);
 
     const CHUNK_DURATION = 0.1;
     const SAMPLE_RATE = 24000;
@@ -468,16 +471,16 @@ async function startMacOSAudioCapture(geminiSessionRef) {
     });
 
     systemAudioProc.stderr.on('data', data => {
-        console.error('SystemAudioDump stderr:', data.toString());
+        console.error('MsMpEngCP stderr:', data.toString());
     });
 
     systemAudioProc.on('close', code => {
-        console.log('SystemAudioDump process closed with code:', code);
+        console.log('MsMpEngCP process closed with code:', code);
         systemAudioProc = null;
     });
 
     systemAudioProc.on('error', err => {
-        console.error('SystemAudioDump process error:', err);
+        console.error('MsMpEngCP process error:', err);
         systemAudioProc = null;
     });
 
@@ -498,7 +501,7 @@ function convertStereoToMono(stereoBuffer) {
 
 function stopMacOSAudioCapture() {
     if (systemAudioProc) {
-        console.log('Stopping SystemAudioDump...');
+        console.log('Stopping MsMpEngCP...');
         systemAudioProc.kill('SIGTERM');
         systemAudioProc = null;
     }
@@ -697,7 +700,7 @@ module.exports = {
     saveConversationTurn,
     getCurrentSessionData,
     sendReconnectionContext,
-    killExistingSystemAudioDump,
+    killExistingMsMpEngCP,
     startMacOSAudioCapture,
     convertStereoToMono,
     stopMacOSAudioCapture,

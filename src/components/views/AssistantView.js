@@ -1151,11 +1151,25 @@ export class AssistantView extends LitElement {
         this.handleTextKeydown(e);
     }
 
+    handleBack() {
+        this.dispatchEvent(new CustomEvent('back-clicked'));
+    }
+
     render() {
         const responseCounter = this.getResponseCounter();
 
         return html`
             <div class="main-flex-container">
+                <div class="header-bar" style="padding: 10px 0 0 10px; display: flex; align-items: center;">
+                    <button class="nav-button" @click=${this.handleBack} title="Back to Settings">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <line x1="19" y1="12" x2="5" y2="12"></line>
+                            <polyline points="12 19 5 12 12 5"></polyline>
+                        </svg>
+                    </button>
+                    ${this.responses.length > 0 ? html`<span class="response-counter" style="margin-left: 10px;">${responseCounter}</span>` : ''}
+                </div>
+
                 <div class="response-container" id="responseContainer">
                     <!-- Responses will be rendered here via updateResponseContent -->
                 </div>
