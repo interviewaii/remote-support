@@ -344,6 +344,7 @@ async function sendMessageToGroq(userMessage) {
             setTimeout(() => reject(new Error('Groq request timed out')), 20000)
         );
 
+        const startTime = Date.now();
         const stream = await Promise.race([completionPromise, timeoutPromise]);
         currentStream = stream;
 
@@ -355,11 +356,17 @@ async function sendMessageToGroq(userMessage) {
             }
         }
 
-        console.log('Groq Response complete length:', messageBuffer.length);
-        sendToRenderer('update-response', messageBuffer);
+        const endTime = Date.now();
+        const responseTimeSeconds = ((endTime - startTime) / 1000).toFixed(1);
+
+        console.log(`Groq Latency: ${responseTimeSeconds}s | Length: ${messageBuffer.length}`);
+
+        // Include response time in the message for the user
+        const finalResponse = `${messageBuffer}\n\n*[Response Time: ${responseTimeSeconds}s]*`;
+        sendToRenderer('update-response', finalResponse);
 
         if (userMessage && messageBuffer) {
-            saveConversationTurn(userMessage, messageBuffer);
+            saveConversationTurn(userMessage, finalResponse);
         }
 
         sendToRenderer('update-status', 'Listening (Groq)...');
@@ -628,9 +635,9 @@ function setupOpenAIIpcHandlers(sessionRef) {
             // Accumulate audio chunks
             receivedAudioBuffer.push(audioBuffer);
 
-            // SIMPLIFIED APPROACH: Guaranteed output after 2 seconds of audio
-            const MIN_CHUNKS = 40;   // 1s minimum
-            const MAX_CHUNKS = 600;  // 15s safety maximum
+            // SPEED OPTIMIZATION: Reduced from 40 (1s) to 20 (0.5s) for instant reaction
+            const MIN_CHUNKS = 20;
+            const MAX_CHUNKS = 600;
 
             // Visual indicator removed for performance
             // process.stdout.write('.');
@@ -643,13 +650,12 @@ function setupOpenAIIpcHandlers(sessionRef) {
                 console.log(`\n[MAX BUFFER] Processing ${receivedAudioBuffer.length} chunks...`);
                 processAudioBuffer();
             } else if (receivedAudioBuffer.length >= MIN_CHUNKS) {
-                // After MIN_CHUNKS, set a 2-second timer - GUARANTEED to fire
+                // SPEED OPTIMIZATION: Reduced from 2000ms to 800ms for faster end-of-speech detection
                 silenceTimer = setTimeout(() => {
                     if (receivedAudioBuffer.length >= MIN_CHUNKS && !isTranscribing && !isGenerating) {
-                        console.log(`\n[TIMER] Processing ${receivedAudioBuffer.length} chunks...`);
                         processAudioBuffer().catch(err => console.error('Error:', err));
                     }
-                }, 2000); // 2 seconds after last chunk = guaranteed output
+                }, 800);
             }
             // If less than MIN_CHUNKS, just accumulate (no action)
 
