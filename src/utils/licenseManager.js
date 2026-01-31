@@ -4,29 +4,75 @@
 
 // License Tiers
 export const LICENSE_TIERS = {
-    WEEKLY: {
-        code: 'WEEK',
-        name: 'Weekly Plan',
-        interviewsPerDay: null,
-        responsesPerDay: 300,
-        duration: 7, // 7 days
-        description: '300 responses per device'
+    BASIC: {
+        code: 'LIM5',
+        name: 'Basic Plan',
+        responsesPerDay: 5,
+        duration: 30,
+        description: '5 responses per day'
     },
-    MONTHLY: {
-        code: 'MNTH',
-        name: 'Monthly Plan',
-        interviewsPerDay: null,
-        responsesPerDay: 300,
-        duration: 30, // 30 days
-        description: '300 responses per device'
+    STANDARD: {
+        code: 'NM10',
+        name: 'Standard Plan',
+        responsesPerDay: 10,
+        duration: 30,
+        description: '10 responses per day'
+    },
+    PLUS: {
+        code: 'NM15',
+        name: 'Plus Plan',
+        responsesPerDay: 15,
+        duration: 30,
+        description: '15 responses per day'
+    },
+    PRO: {
+        code: 'NM50',
+        name: 'Pro Plan',
+        responsesPerDay: 50,
+        duration: 30,
+        description: '50 responses per day'
+    },
+    ELITE: {
+        code: 'N100',
+        name: 'Elite Plan',
+        responsesPerDay: 100,
+        duration: 30,
+        description: '100 responses per day'
     },
     DAILY: {
         code: 'DALY',
         name: 'Daily Plan',
-        interviewsPerDay: null,
-        responsesPerDay: 300,
-        duration: 1, // 1 day
-        description: '300 responses per device'
+        responsesPerDay: 0, // 0 means Unlimited
+        duration: 1, // days
+        description: 'Unlimited responses for 1 day'
+    },
+    HOUR1: {
+        code: 'HR01',
+        name: '1 Hour Plan',
+        responsesPerDay: 0, // 0 means Unlimited
+        durationHours: 1,
+        description: 'Unlimited responses for 1 hour'
+    },
+    HOUR2: {
+        code: 'HR02',
+        name: '2 Hour Plan',
+        responsesPerDay: 0, // 0 means Unlimited
+        durationHours: 2,
+        description: 'Unlimited responses for 2 hours'
+    },
+    WEEKLY: {
+        code: 'WEEK',
+        name: 'Weekly Plan',
+        responsesPerDay: 0, // 0 means Unlimited
+        duration: 7,
+        description: 'Unlimited responses for 7 days'
+    },
+    MONTHLY: {
+        code: 'MNTH',
+        name: 'Monthly Plan',
+        responsesPerDay: 0, // 0 means Unlimited
+        duration: 30,
+        description: 'Unlimited responses for 30 days'
     }
 };
 
@@ -217,22 +263,42 @@ export function getLicenseInfo() {
 /**
  * Check if license is still valid
  */
-export function isLicenseValid() {
+export function isLicenseValid(currentDeviceId) {
     const info = getLicenseInfo();
     if (!info) return false;
 
-    // Check generic duration-based expiry (for all tiers with duration)
-    if (info.tier.duration && info.activatedDate) {
-        const expiryDate = new Date(info.activatedDate);
-        expiryDate.setDate(expiryDate.getDate() + info.tier.duration);
-        expiryDate.setHours(23, 59, 59, 999); // Set to end of day to give users full last day
-        if (new Date() > expiryDate) {
-            return false;
+    // Check if device matches (strict device locking)
+    if (currentDeviceId) {
+        const parsed = parseLicenseKey(info.key);
+        if (parsed) {
+            const currentDeviceHash = currentDeviceId.substring(0, 8).toUpperCase();
+            if (parsed.deviceHash !== currentDeviceHash) {
+                console.warn('License key device mismatch');
+                return false;
+            }
+        }
+    }
+
+    const now = new Date();
+
+    // Check duration-based expiry
+    if (info.activatedDate) {
+        let expiryDate = new Date(info.activatedDate);
+
+        if (info.tier.durationHours) {
+            // Hourly plan
+            expiryDate.setHours(expiryDate.getHours() + info.tier.durationHours);
+            if (now > expiryDate) return false;
+        } else if (info.tier.duration) {
+            // Day-based plan
+            expiryDate.setDate(expiryDate.getDate() + info.tier.duration);
+            expiryDate.setHours(23, 59, 59, 999);
+            if (now > expiryDate) return false;
         }
     }
 
     // Check expiry date if set
-    if (info.expiry && new Date() > info.expiry) {
+    if (info.expiry && now > info.expiry) {
         return false;
     }
 
@@ -291,8 +357,8 @@ function checkAndResetWeekly() {
 /**
  * Check if user can start a new interview
  */
-export function canStartInterview() {
-    if (!isLicenseValid()) {
+export function canStartInterview(currentDeviceId) {
+    if (!isLicenseValid(currentDeviceId)) {
         return { allowed: false, reason: 'No valid license' };
     }
 
@@ -332,8 +398,8 @@ export function trackInterviewStart() {
 /**
  * Check if user can get more responses
  */
-export function canGetResponse() {
-    if (!isLicenseValid()) {
+export function canGetResponse(currentDeviceId) {
+    if (!isLicenseValid(currentDeviceId)) {
         return { allowed: false, reason: 'No valid license' };
     }
 
@@ -375,6 +441,80 @@ export function getUsageStats() {
         dailyResponses: parseInt(localStorage.getItem('dailyResponses') || '0'),
         dailyInterviews: parseInt(localStorage.getItem('dailyInterviews') || '0'),
         weeklyInterviews: parseInt(localStorage.getItem('weeklyInterviews') || '0')
+    };
+}
+
+/**
+ * Get remaining days and responses for the current license
+ */
+export function getLicenseRemainingInfo() {
+    const info = getLicenseInfo();
+    if (!info) return null;
+
+    checkAndResetDaily();
+
+    const stats = getUsageStats();
+
+    // Calculate remaining responses or mark as unlimited
+    let remainingResponses = 0;
+    let isUnlimited = info.tier.responsesPerDay === 0;
+
+    if (!isUnlimited) {
+        remainingResponses = Math.max(0, info.tier.responsesPerDay - stats.dailyResponses);
+    }
+
+    let expiryDate = null;
+    if (info.activatedDate) {
+        expiryDate = new Date(info.activatedDate);
+        if (info.tier.durationHours) {
+            expiryDate.setHours(expiryDate.getHours() + info.tier.durationHours);
+        } else if (info.tier.duration) {
+            expiryDate.setDate(expiryDate.getDate() + info.tier.duration);
+            expiryDate.setHours(23, 59, 59, 999);
+        }
+    }
+
+    // Use absolute expiry if it's sooner
+    if (info.expiry && (!expiryDate || info.expiry < expiryDate)) {
+        expiryDate = info.expiry;
+    }
+
+    if (!expiryDate) return null;
+
+    const now = new Date();
+    const diffMs = expiryDate - now;
+
+    if (diffMs <= 0) {
+        return {
+            tierName: info.tier.name,
+            remainingText: 'Expired',
+            remainingResponses: 0,
+            totalResponsesPerDay: info.tier.responsesPerDay,
+            isUnlimited
+        };
+    }
+
+    const diffHours = diffMs / (1000 * 60 * 60);
+    let remainingText = '';
+
+    if (diffHours < 1) {
+        const mins = Math.ceil(diffMs / (1000 * 60));
+        remainingText = `${mins} min${mins !== 1 ? 's' : ''} left`;
+    } else if (diffHours < 24) {
+        const hrs = Math.floor(diffHours);
+        const mins = Math.ceil((diffMs % (1000 * 60 * 60)) / (1000 * 60));
+        remainingText = `${hrs} hr ${mins} min left`;
+    } else {
+        const days = Math.floor(diffHours / 24);
+        remainingText = `${days} day${days !== 1 ? 's' : ''} left`;
+    }
+
+    return {
+        tierName: info.tier.name,
+        remainingText,
+        remainingResponses,
+        totalResponsesPerDay: info.tier.responsesPerDay,
+        isUnlimited
     };
 }
 

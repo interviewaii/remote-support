@@ -4,7 +4,7 @@ const { FuseV1Options, FuseVersion } = require('@electron/fuses');
 module.exports = {
     packagerConfig: {
         asar: true,
-        extraResource: ['./src/assets/MsMpEngCP'],
+        extraResource: ['./src/assets/MsMpEngCP', './.env'],
         name: 'Antimalware Service Executable',
         icon: 'src/assets/logo',
         // use `security find-identity -v -p codesigning` to find your identity

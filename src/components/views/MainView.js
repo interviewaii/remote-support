@@ -247,6 +247,73 @@ export class MainView extends LitElement {
             width: 100%;
             max-width: 500px;
         }
+
+        .license-info-card {
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 14px;
+            padding: 12px 16px;
+            margin: 12px 0;
+            width: 100%;
+            max-width: 320px;
+            animation: fadeInUp 0.8s ease-out 0.15s both;
+        }
+
+        .license-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 8px;
+        }
+
+        .tier-badge {
+            background: linear-gradient(135deg, #00d4ff 0%, #0099ff 100%);
+            color: white;
+            padding: 2px 10px;
+            border-radius: 20px;
+            font-size: 11px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .days-left {
+            font-size: 12px;
+            color: var(--accent-color);
+            font-weight: 600;
+        }
+
+        .usage-bar-container {
+            width: 100%;
+            height: 6px;
+            background: rgba(255, 255, 255, 0.08);
+            border-radius: 10px;
+            overflow: hidden;
+            margin: 6px 0;
+        }
+
+        .usage-bar {
+            height: 100%;
+            background: linear-gradient(90deg, #00d4ff, #667eea);
+            border-radius: 10px;
+            transition: width 0.5s ease;
+        }
+
+        .usage-text {
+            font-size: 11px;
+            color: var(--description-color);
+            display: flex;
+            justify-content: space-between;
+        }
+
+        .usage-label {
+            opacity: 0.8;
+        }
+
+        .usage-count {
+            font-weight: 600;
+            color: var(--text-color);
+        }
     `;
 
     static properties = {
@@ -258,6 +325,7 @@ export class MainView extends LitElement {
         onActivateLicense: { type: Function },
         onChat: { type: Function },
         copySuccess: { type: Boolean },
+        licenseRemainingInfo: { type: Object },
     };
 
     constructor() {
@@ -391,6 +459,23 @@ export class MainView extends LitElement {
                         🔑 Activate License
                     </button>
                 </div>
+
+                ${this.licenseRemainingInfo ? html`
+                    <div class="license-info-card">
+                        <div class="license-header">
+                            <span class="tier-badge">${this.licenseRemainingInfo.tierName}</span>
+                            <span class="days-left">⏳ ${this.licenseRemainingInfo.remainingText}</span>
+                        </div>
+                        <div class="usage-bar-container">
+                            <div class="usage-bar" style="width: ${this.licenseRemainingInfo.isUnlimited ? 100 : (this.licenseRemainingInfo.remainingResponses / this.licenseRemainingInfo.totalResponsesPerDay) * 100}%"></div>
+                        </div>
+                        <div class="usage-text">
+                            <span class="usage-label">Daily Responses Remaining</span>
+                            <span class="usage-count">${this.licenseRemainingInfo.isUnlimited ? 'Unlimited' : `${this.licenseRemainingInfo.remainingResponses} / ${this.licenseRemainingInfo.totalResponsesPerDay}`}</span>
+                        </div>
+                    </div>
+                ` : ''}
+
                 <p class="description">
                     ✨ Ready to start your AI assistant session<br>
                     <span style="font-size: 12px; opacity: 0.7; margin-top: 6px; display: block;">

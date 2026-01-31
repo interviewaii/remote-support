@@ -37,6 +37,7 @@ let silenceTimer = null; // Timer to flush buffer on silence
 let partialTranscriptionTimer = null; // Timer for intermediate feedback
 let speechStartTime = null; // Track when current speech segment started
 let lastPartialResults = ""; // Avoid flickering if transcription doesn't change
+let screenshotResponseStyle = 'code_only'; // Default style
 
 function sendToRenderer(channel, data) {
     const windows = BrowserWindow.getAllWindows();
@@ -770,30 +771,60 @@ function setupOpenAIIpcHandlers(sessionRef) {
                 return { success: false, error: 'Invalid image data' };
             }
 
-            const analysisPrompt = prompt || 'Analyze this image and provide relevant information for an interview context.';
-            console.log('Processing image with GPT-4 Vision. Prompt:', analysisPrompt.substring(0, 100) + '...');
+            // Determine settings based on style
+            let stylePrompt = '';
+            let styleMaxTokens = 800;
 
-            // Use GPT-4 Vision for image analysis
+            switch (screenshotResponseStyle) {
+                case 'code_only':
+                    stylePrompt = 'Provide ONLY the code solution. No explanations or conversational text.';
+                    styleMaxTokens = 300;
+                    break;
+                case 'assignment':
+                    stylePrompt = 'Provide a direct answer/solution. Be concise and straight to the point.';
+                    styleMaxTokens = 500;
+                    break;
+                case 'approach_solution':
+                    stylePrompt = 'Briefly explain the approach, then provide the solution.';
+                    styleMaxTokens = 800;
+                    break;
+                case 'full_analysis':
+                    stylePrompt = 'Provide a comprehensive analysis, including context and deep explanation.';
+                    styleMaxTokens = 1200;
+                    break;
+                default:
+                    stylePrompt = 'Provide ONLY the code solution.';
+                    styleMaxTokens = 300;
+            }
+
+            const analysisPrompt = prompt || `Analyze this screenshot. ${stylePrompt}`;
+            console.log(`Processing image with GPT-4o Mini (Style: ${screenshotResponseStyle}). Tokens: ${styleMaxTokens}`);
+
+            // Use GPT-4o Mini and Low Detail for maximum cost efficiency
+            // GPT-4o Mini is significantly cheaper than GPT-4o
+            // detail: 'low' caps token usage at 85 tokens regardless of image size
             const response = await openaiClient.chat.completions.create({
-                model: 'gpt-4o', // GPT-4 with vision capabilities
+                model: 'gpt-4o-mini', // Forced cost-effective model
                 messages: [
                     {
                         role: 'user',
                         content: [
                             {
                                 type: 'text',
+                                // Concise prompt to save tokens
                                 text: analysisPrompt
                             },
                             {
                                 type: 'image_url',
                                 image_url: {
-                                    url: `data:image/jpeg;base64,${data}`
+                                    url: `data:image/jpeg;base64,${data}`,
+                                    detail: 'low' // Force low detail (85 tokens)
                                 }
                             }
                         ]
                     }
                 ],
-                max_tokens: 1000, // Increased for more detailed answers
+                max_tokens: styleMaxTokens,
             });
 
             const imageAnalysis = response.choices[0].message.content;
@@ -921,6 +952,15 @@ function setupOpenAIIpcHandlers(sessionRef) {
             console.error('Error updating Google Search setting:', error);
             return { success: false, error: error.message };
         }
+    });
+
+    ipcMain.handle('update-screenshot-style', (event, style) => {
+        if (style) {
+            screenshotResponseStyle = style;
+            console.log('Updated screenshot response style to:', style);
+            return true;
+        }
+        return false;
     });
 }
 

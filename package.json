@@ -27,7 +27,10 @@
   },
   "license": "GPL-3.0",
   "dependencies": {
+    "@google/genai": "^1.39.0",
+    "dotenv": "^17.2.3",
     "electron-squirrel-startup": "^1.0.1",
+    "groq-sdk": "^0.37.0",
     "node-machine-id": "^1.1.12",
     "openai": "^6.17.0"
   },

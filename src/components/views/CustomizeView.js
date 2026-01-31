@@ -647,6 +647,7 @@ export class CustomizeView extends LitElement {
         onAdvancedModeChange: { type: Function },
         activeTab: { type: String },
         resumeFileName: { type: String },
+        screenshotResponseStyle: { type: String },
     };
 
     constructor() {
@@ -663,6 +664,10 @@ export class CustomizeView extends LitElement {
         this.onImageQualityChange = () => { };
         this.onLayoutModeChange = () => { };
         this.onAdvancedModeChange = () => { };
+        this.onScreenshotResponseStyleChange = () => { };
+
+        // Default to "Code Only" as requested
+        this.screenshotResponseStyle = 'code_only';
 
         // Google Search default
         this.googleSearchEnabled = true;
@@ -683,6 +688,7 @@ export class CustomizeView extends LitElement {
         this.loadFontSize();
         this.activeTab = 'profile';
         this.resumeFileName = localStorage.getItem('resumeFileName') || '';
+        this.screenshotResponseStyle = localStorage.getItem('screenshotResponseStyle') || 'code_only';
     }
 
     connectedCallback() {
@@ -792,6 +798,23 @@ export class CustomizeView extends LitElement {
         this.selectedScreenshotInterval = e.target.value;
         localStorage.setItem('selectedScreenshotInterval', this.selectedScreenshotInterval);
         this.onScreenshotIntervalChange(this.selectedScreenshotInterval);
+    }
+
+    handleScreenshotResponseStyleSelect(e) {
+        this.screenshotResponseStyle = e.target.value;
+        localStorage.setItem('screenshotResponseStyle', this.screenshotResponseStyle);
+
+        // Notify main process immediately
+        if (window.require) {
+            try {
+                const { ipcRenderer } = window.require('electron');
+                ipcRenderer.invoke('update-screenshot-style', this.screenshotResponseStyle);
+            } catch (error) {
+                console.error('Failed to update screenshot style:', error);
+            }
+        }
+
+        this.requestUpdate();
     }
 
     handleImageQualitySelect(e) {
@@ -1275,9 +1298,22 @@ export class CustomizeView extends LitElement {
                         <div class="card-content">
                             <label class="form-label">Speech Language</label>
                             <select class="form-control" .value=${this.selectedLanguage} @change=${this.handleLanguageSelect}>
-                                ${languages.map(language => html`<option value=${language.value}>${language.name}</option>`)}
+                                ${this.getLanguages().map(language => html`<option value=${language.value}>${language.name}</option>`)}
                             </select>
                             <div class="form-description">Choose how your AI sounds and understands you.</div>
+
+                            <hr style="border: 0; border-top: 1px solid var(--card-border); margin: 16px 0;">
+
+                            <div class="form-group">
+                                <label class="form-label">Screenshot Response Style</label>
+                                <select class="form-control" .value="${this.screenshotResponseStyle}" @change="${this.handleScreenshotResponseStyleSelect}">
+                                    <option value="code_only">Code Only (Lowest Cost)</option>
+                                    <option value="assignment">Assignment/Answer (Low Cost)</option>
+                                    <option value="approach_solution">Approach & Solution (Medium Cost)</option>
+                                    <option value="full_analysis">Full Analysis (High Cost)</option>
+                                </select>
+                                <div class="form-description">Controls detail level and token usage for screenshot analysis.</div>
+                            </div>
                         </div>
                     </div>
                 ` : ''}

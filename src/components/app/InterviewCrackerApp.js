@@ -9,7 +9,7 @@ import { OnboardingView } from '../views/OnboardingView.js';
 import { AdvancedView } from '../views/AdvancedView.js';
 import { PaymentAlert } from '../views/PaymentAlert.js';
 import { isActivationValid, activateWithDeviceLock } from '../../utils/deviceId.js';
-import { isLicenseValid, activateLicense, canStartInterview, canGetResponse, trackInterviewStart, trackResponse, getLicenseInfo } from '../../utils/licenseManager.js';
+import { isLicenseValid, activateLicense, canStartInterview, canGetResponse, trackInterviewStart, trackResponse, getLicenseInfo, getLicenseRemainingInfo } from '../../utils/licenseManager.js';
 
 export class InterviewCrackerApp extends LitElement {
     static styles = css`
@@ -357,9 +357,18 @@ export class InterviewCrackerApp extends LitElement {
     }
 
     async verifyActivation() {
+        // Get device ID for verification
+        const deviceId = await (async () => {
+            if (window.require) {
+                const { ipcRenderer } = window.require('electron');
+                return await ipcRenderer.invoke('get-machine-id');
+            }
+            return localStorage.getItem('deviceId') || 'browser-fallback';
+        })();
+
         // Check both old activation and new license system
         const oldActivation = await isActivationValid();
-        const licenseValid = isLicenseValid();
+        const licenseValid = isLicenseValid(deviceId);
         this.isActivated = oldActivation || licenseValid;
         this.requestUpdate();
     }
@@ -466,7 +475,7 @@ export class InterviewCrackerApp extends LitElement {
         this.requestUpdate();
     }
 
-    setResponse(response, isFinal = false) {
+    async setResponse(response, isFinal = false) {
         // Simple deduplication check
         if (this.responses.length > 0 && this.responses[this.responses.length - 1] === response) {
             console.log('Skipped duplicate response in UI');
@@ -476,7 +485,16 @@ export class InterviewCrackerApp extends LitElement {
 
         // Only check license limits if user is already activated
         if (this.isActivated) {
-            const responseCheck = canGetResponse();
+            // Get device ID for limit checks
+            const deviceId = await (async () => {
+                if (window.require) {
+                    const { ipcRenderer } = window.require('electron');
+                    return await ipcRenderer.invoke('get-machine-id');
+                }
+                return localStorage.getItem('deviceId') || 'browser-fallback';
+            })();
+
+            const responseCheck = canGetResponse(deviceId);
             if (!responseCheck.allowed) {
                 this.setStatus(responseCheck.reason);
                 alert(`⚠️ Limit Reached\n\n${responseCheck.reason}\n\nPlease upgrade your plan or wait until tomorrow.`);
@@ -637,8 +655,17 @@ export class InterviewCrackerApp extends LitElement {
             return;
         }
 
+        // Get device ID for limit checks
+        const deviceId = await (async () => {
+            if (window.require) {
+                const { ipcRenderer } = window.require('electron');
+                return await ipcRenderer.invoke('get-machine-id');
+            }
+            return localStorage.getItem('deviceId') || 'browser-fallback';
+        })();
+
         // Check license limits
-        const interviewCheck = canStartInterview();
+        const interviewCheck = canStartInterview(deviceId);
         if (!interviewCheck.allowed) {
             alert(interviewCheck.reason);
             return;
@@ -832,6 +859,7 @@ export class InterviewCrackerApp extends LitElement {
                         .onLayoutModeChange=${layoutMode => this.handleLayoutModeChange(layoutMode)}
                         .onActivateLicense=${() => this.handleActivateLicenseClick()}
                         .onChat=${() => this.handleChatClick()}
+                        .licenseRemainingInfo=${getLicenseRemainingInfo()}
                     ></main-view>
                 `;
 
