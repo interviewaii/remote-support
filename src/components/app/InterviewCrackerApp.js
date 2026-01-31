@@ -28,7 +28,9 @@ export class InterviewCrackerApp extends LitElement {
 
         input, textarea {
             user-select: text !important;
+            -webkit-user-select: text !important;
             cursor: text !important;
+            pointer-events: auto !important;
         }
 
         :host {
@@ -1104,15 +1106,38 @@ export class InterviewCrackerApp extends LitElement {
                     await window.interviewAI.initializeGemini(this.selectedProfile, this.selectedLanguage);
                 }
 
-                this.requestUpdate();
+                // Use a small delay for the alert to allow the UI to transition and the overlay to remove
+                setTimeout(async () => {
+                    // Force the window to handle interaction again just in case click-through was sticked
+                    if (window.require) {
+                        const { ipcRenderer } = window.require('electron');
+                        ipcRenderer.send('view-changed', 'main');
+                        ipcRenderer.send('view-changed', 'assistant');
 
-                // Show upgrade message if applicable
-                if (licenseResult.isUpgrade) {
-                    alert(`✓ License upgraded successfully!\n\nPrevious: ${licenseResult.previousTier}\nNew: ${licenseResult.tier}\n\nYour new plan is now active!`);
-                } else {
-                    alert(`✓ License activated successfully!\n\nPlan: ${licenseResult.tier}\nDevice ID: ${licenseResult.deviceId}`);
-                }
-                console.log('License activated:', licenseResult.tier);
+                        // Try to focus the window
+                        try {
+                            const { remote } = window.require('electron');
+                            if (remote) remote.getCurrentWindow().focus();
+                        } catch (e) { }
+                    }
+
+                    // Show success message
+                    const message = licenseResult.isUpgrade
+                        ? `✓ License upgraded successfully!\n\nPrevious: ${licenseResult.previousTier}\nNew: ${licenseResult.tier}\n\nYour new plan is now active!`
+                        : `✓ License activated successfully!\n\nPlan: ${licenseResult.tier}\nDevice ID: ${licenseResult.deviceId}`;
+
+                    alert(message);
+
+                    // Force focus to the input box after alert is dismissed
+                    setTimeout(() => {
+                        const assistantView = this.shadowRoot.querySelector('assistant-view');
+                        if (assistantView && assistantView.focusInput) {
+                            assistantView.focusInput();
+                        }
+                    }, 100);
+                }, 100);
+
+                this.requestUpdate();
                 return;
             } else {
                 // Show error message in the payment alert

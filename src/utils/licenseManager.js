@@ -77,6 +77,62 @@ export const LICENSE_TIERS = {
 };
 
 /**
+ * Get the current protected time (Monotonic Clock - Cannot go backward or pause)
+ */
+function getCurrentTime() {
+    const nowSystemTime = new Date().getTime();
+
+    // Initialize storage if it's the first run
+    if (!localStorage.getItem('license_protected_time')) {
+        localStorage.setItem('license_protected_time', nowSystemTime.toString());
+        localStorage.setItem('license_last_system_time', nowSystemTime.toString());
+        return new Date(nowSystemTime);
+    }
+
+    let protectedTime = parseInt(localStorage.getItem('license_protected_time'));
+    let lastSystemTime = parseInt(localStorage.getItem('license_last_system_time'));
+
+    // Calculate how much the system clock has moved since our last check
+    const systemDelta = nowSystemTime - lastSystemTime;
+
+    if (systemDelta > 0) {
+        // Clock moved forward (normal or forward-shifted)
+        // We advance the protected time accordingly
+        protectedTime += systemDelta;
+    } else if (systemDelta < 0) {
+        // Clock ROLLBACK detected!
+        // Instead of rewinding our clock, we keep it at the last known protected time.
+        // We could even add a few milliseconds to ensure time never "freezes".
+        console.warn('Clock rollback detected! Protected clock is holding its state.');
+    }
+
+    // Save state
+    localStorage.setItem('license_protected_time', protectedTime.toString());
+    localStorage.setItem('license_last_system_time', nowSystemTime.toString());
+
+    return new Date(protectedTime);
+}
+
+/**
+ * Fetch current time from a network API (tamper-proof)
+ */
+async function getNetworkTime() {
+    try {
+        const response = await fetch('https://worldtimeapi.org/api/ip');
+        const data = await response.json();
+        if (data && data.datetime) {
+            const networkDate = new Date(data.datetime);
+            // Sync our protected clock with network time if we got it
+            localStorage.setItem('license_protected_time', networkDate.getTime().toString());
+            return networkDate;
+        }
+    } catch (error) {
+        console.warn('Network time fetch failed, falling back to protected monotonic clock:', error);
+    }
+    return getCurrentTime();
+}
+
+/**
  * Generate checksum for license key validation
  */
 function generateChecksum(tier, deviceHash, expiry) {
@@ -165,7 +221,7 @@ export function validateLicenseKey(key, currentDeviceId) {
     // Check expiry
     if (expiry) {
         const expiryDate = parseDate(expiry);
-        const now = new Date();
+        const now = getCurrentTime();
         if (now > expiryDate) {
             return { valid: false, error: 'License key has expired' };
         }
@@ -197,15 +253,18 @@ export async function activateLicense(key, deviceId) {
 
     const { tier, expiry } = validation;
 
-    // Check if there's an existing license
     const existingLicense = getLicenseInfo();
     const isUpgrade = existingLicense && existingLicense.tier.code !== tier.code;
 
-    // Store new license information (replaces old one automatically)
+    // CRITICAL: use network-safe time for activation to prevent instant expiry via clock trick
+    const now = await getNetworkTime();
+    const activatedDate = now.toISOString();
+
+    // Store new license information
     localStorage.setItem('licenseKey', key);
     localStorage.setItem('licenseTier', tier.code);
     localStorage.setItem('licenseExpiry', expiry || '');
-    localStorage.setItem('licenseActivatedDate', new Date().toISOString());
+    localStorage.setItem('licenseActivatedDate', activatedDate);
 
     // Sync to file-based config store
     if (window.require) {
@@ -215,7 +274,7 @@ export async function activateLicense(key, deviceId) {
                 licenseKey: key,
                 licenseTier: tier.code,
                 licenseExpiry: expiry || '',
-                licenseActivatedDate: localStorage.getItem('licenseActivatedDate')
+                licenseActivatedDate: activatedDate
             });
         } catch (error) {
             console.error('Failed to sync license to file store:', error);
@@ -279,7 +338,7 @@ export function isLicenseValid(currentDeviceId) {
         }
     }
 
-    const now = new Date();
+    const now = getCurrentTime();
 
     // Check duration-based expiry
     if (info.activatedDate) {
@@ -309,7 +368,7 @@ export function isLicenseValid(currentDeviceId) {
  * Reset usage tracking
  */
 function resetUsageTracking() {
-    const today = new Date().toDateString();
+    const today = getCurrentTime().toDateString();
     localStorage.setItem('usageDate', today);
     localStorage.setItem('dailyResponses', '0');
     localStorage.setItem('dailyInterviews', '0');
@@ -321,7 +380,7 @@ function resetUsageTracking() {
  * Check and reset daily usage if needed
  */
 function checkAndResetDaily() {
-    const today = new Date().toDateString();
+    const today = getCurrentTime().toDateString();
     const lastDate = localStorage.getItem('usageDate');
 
     if (lastDate !== today) {
@@ -335,7 +394,7 @@ function checkAndResetDaily() {
  * Check and reset weekly usage if needed
  */
 function checkAndResetWeekly() {
-    const today = new Date();
+    const today = getCurrentTime();
     const weekStart = localStorage.getItem('weekStartDate');
 
     if (!weekStart) {
@@ -367,17 +426,6 @@ export function canStartInterview(currentDeviceId) {
     checkAndResetWeekly();
 
     const dailyInterviews = parseInt(localStorage.getItem('dailyInterviews') || '0');
-
-    // Check daily interview limit from tier configuration
-    // if (info.tier.interviewsPerDay) {
-    //     if (dailyInterviews >= info.tier.interviewsPerDay) {
-    //         return {
-    //             allowed: false,
-    //             reason: `Daily interview limit reached (${info.tier.interviewsPerDay} per day)`
-    //         };
-    //     }
-    // }
-
     return { allowed: true };
 }
 
@@ -481,7 +529,7 @@ export function getLicenseRemainingInfo() {
 
     if (!expiryDate) return null;
 
-    const now = new Date();
+    const now = getCurrentTime();
     const diffMs = expiryDate - now;
 
     if (diffMs <= 0) {
@@ -531,6 +579,8 @@ export function deactivateLicense() {
     localStorage.removeItem('dailyInterviews');
     localStorage.removeItem('weeklyInterviews');
     localStorage.removeItem('weekStartDate');
+    localStorage.removeItem('license_protected_time');
+    localStorage.removeItem('license_last_system_time');
 
     // Sync to file-based config store
     if (window.require) {

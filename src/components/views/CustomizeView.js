@@ -109,8 +109,9 @@ export class CustomizeView extends LitElement {
             transition: all 0.15s ease;
             min-height: 16px;
             font-weight: 400;
-            user-select: text;
-            -webkit-user-select: text;
+            user-select: text !important;
+            -webkit-user-select: text !important;
+            pointer-events: auto !important;
         }
 
         .form-control:focus {

@@ -1080,6 +1080,16 @@ export class AssistantView extends LitElement {
         }
     }
 
+    focusInput() {
+        setTimeout(() => {
+            const textInput = this.shadowRoot.querySelector('#textInput');
+            if (textInput) {
+                textInput.focus();
+                console.log('Input field focused');
+            }
+        }, 50);
+    }
+
     disconnectedCallback() {
         super.disconnectedCallback();
 
