@@ -66,6 +66,13 @@ function saveConversationTurn(transcription, aiResponse) {
     };
 
     conversationHistory.push(conversationTurn);
+
+    // Prevent memory creep for long sessions (2-3 hours)
+    if (conversationHistory.length > 50) {
+        conversationHistory = conversationHistory.slice(-50);
+        console.log('Trimmed conversation history to last 50 turns');
+    }
+
     console.log('Saved conversation turn:', conversationTurn);
 
     // Send to renderer to save in IndexedDB
@@ -649,12 +656,9 @@ function setupOpenAIIpcHandlers(sessionRef) {
             // Accumulate audio chunks
             receivedAudioBuffer.push(audioBuffer);
 
-            // SPEED OPTIMIZATION: Reduced from 40 (1s) to 20 (0.5s) for instant reaction
-            const MIN_CHUNKS = 20;
-            const MAX_CHUNKS = 600;
-
-            // Visual indicator removed for performance
-            // process.stdout.write('.');
+            // ADJUSTMENT: Since chunks are now 1.0s, we only need 1-2 chunks to process
+            const MIN_CHUNKS = 1; // 1 second minimum
+            const MAX_CHUNKS = 15; // 15 seconds maximum
 
             // Reset silence timer on every chunk
             if (silenceTimer) clearTimeout(silenceTimer);
@@ -664,12 +668,12 @@ function setupOpenAIIpcHandlers(sessionRef) {
                 console.log(`\n[MAX BUFFER] Processing ${receivedAudioBuffer.length} chunks...`);
                 processAudioBuffer();
             } else if (receivedAudioBuffer.length >= MIN_CHUNKS) {
-                // SPEED OPTIMIZATION: Reduced from 2000ms to 800ms for faster end-of-speech detection
+                // Wait for a brief pause (silence) before processing
                 silenceTimer = setTimeout(() => {
                     if (receivedAudioBuffer.length >= MIN_CHUNKS && !isTranscribing && !isGenerating) {
                         processAudioBuffer().catch(err => console.error('Error:', err));
                     }
-                }, 800);
+                }, 600); // 600ms silence timeout
             }
             // If less than MIN_CHUNKS, just accumulate (no action)
 

@@ -8,8 +8,8 @@ let audioProcessor = null;
 let micAudioProcessor = null;
 let audioBuffer = [];
 const SAMPLE_RATE = 24000;
-const AUDIO_CHUNK_DURATION = 0.025; // seconds - maximum speed for fastest response
-const BUFFER_SIZE = 2048; // Reduced buffer size for lower latency (~85ms)
+const AUDIO_CHUNK_DURATION = 1.0; // seconds - Optimized from 0.025s to 1.0s to reduce IPC flood (40x reduction)
+const BUFFER_SIZE = 4096; // Increased buffer size for stability
 
 let hiddenVideo = null;
 let offscreenCanvas = null;
