@@ -544,7 +544,30 @@ async function captureManualScreenshot(imageQuality = null) {
     let analysisPrompt;
 
     if (selectedProfile === 'coding') {
-        analysisPrompt = `Analyze this screenshot and identify any coding questions. Provide a structured solution approach (Problem, Approach, Code, Explanation).`;
+        // Coding Interview - Structured, Solution Approach
+        analysisPrompt = `Analyze this screenshot and identify the technical question (Coding, System Design, GenAI, or Architecture). Provide a structured solution approach:
+
+**1. Problem Identification:**
+- Identify the core problem or concept (e.g., LeetCode, GenAI Architecture, API Design).
+- Mention constraints or key requirements.
+
+**2. Approach & Logic:**
+- Explain the logic/architecture step-by-step.
+- For System Design/GenAI: Explain the workflow, components, or strategy.
+- For Coding: Discuss algorithms and complexity.
+
+**3. Solution Code / Implementation:**
+- Provide the complete code, configuration, or structural implementation.
+- For GenAI/Architecture: Provide code snippets (e.g., Python/FastAPI), API schemas, or implementation steps.
+- Use clean, commented code.
+
+**4. Explanation:**
+- Briefly explain how the solution works or why this architecture is chosen.
+
+**Response Format:**
+- You MUST use the headings: **1. Problem**, **2. Approach**, **3. Code**, **4. Explanation**.
+- Be concise but complete.
+- Go straight to the solution.`;
     } else {
         analysisPrompt = `Analyze this screenshot and identify the interview question. Provide a natural, conversational, human-like response.`;
     }
