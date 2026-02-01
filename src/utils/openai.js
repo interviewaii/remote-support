@@ -391,7 +391,7 @@ async function sendMessageToGroq(userMessage) {
             const completionPromise = groq.chat.completions.create({
                 messages: messages,
                 model: "llama-3.3-70b-versatile",
-                temperature: 0.7,
+                temperature: 0.2, // LOW TEMP for High Precision (No Hallucinations)
                 max_tokens: 2048,
                 top_p: 1,
                 stream: true,
