@@ -8,7 +8,7 @@ let audioProcessor = null;
 let micAudioProcessor = null;
 let audioBuffer = [];
 const SAMPLE_RATE = 24000;
-const AUDIO_CHUNK_DURATION = 1.0; // seconds - Optimized from 0.025s to 1.0s to reduce IPC flood (40x reduction)
+const AUDIO_CHUNK_DURATION = 0.25; // seconds - Optimized to 0.25s for "Immediate" (0.2s) analysis feel
 const BUFFER_SIZE = 4096; // Increased buffer size for stability
 
 let hiddenVideo = null;
@@ -141,7 +141,8 @@ function arrayBufferToBase64(buffer) {
 async function initializeGemini(profile = 'interview', language = 'en-US') {
     // OpenAI API key - loaded from env in main process
     const apiKey = '';
-    const success = await ipcRenderer.invoke('initialize-gemini', apiKey, localStorage.getItem('customPrompt') || '', localStorage.getItem('resumeContext') || '', profile, language);
+    const silenceThreshold = localStorage.getItem('silenceThreshold') || '0.5';
+    const success = await ipcRenderer.invoke('initialize-gemini', apiKey, localStorage.getItem('customPrompt') || '', localStorage.getItem('resumeContext') || '', profile, language, silenceThreshold);
     if (success) {
         interviewCrackerElement().setStatus('Live');
     } else {

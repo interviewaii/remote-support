@@ -650,6 +650,7 @@ export class CustomizeView extends LitElement {
         activeTab: { type: String },
         resumeFileName: { type: String },
         screenshotResponseStyle: { type: String },
+        silenceThreshold: { type: String },
     };
 
     constructor() {
@@ -693,6 +694,7 @@ export class CustomizeView extends LitElement {
         this.activeTab = 'profile';
         this.resumeFileName = localStorage.getItem('resumeFileName') || '';
         this.screenshotResponseStyle = localStorage.getItem('screenshotResponseStyle') || 'code_only';
+        this.silenceThreshold = localStorage.getItem('silenceThreshold') || '0.5';
     }
 
     connectedCallback() {
@@ -1188,6 +1190,12 @@ export class CustomizeView extends LitElement {
         root.style.setProperty('--response-font-size', `${this.fontSize}px`);
     }
 
+    handleSilenceChange(e) {
+        this.silenceThreshold = e.target.value;
+        localStorage.setItem('silenceThreshold', this.silenceThreshold);
+        this.requestUpdate();
+    }
+
     setTab(tab) {
         this.activeTab = tab;
     }
@@ -1407,6 +1415,21 @@ export class CustomizeView extends LitElement {
                     <div class="settings-card">
                         <div class="card-title"><span>⚙️</span> Advanced</div>
                         <div class="card-content">
+                            <div class="slider-header">
+                                <label class="form-label">Response Speed (Silence Detection)</label>
+                                <span class="slider-value">${this.silenceThreshold}s</span>
+                            </div>
+                            <div class="slider-container">
+                                <input type="range" class="slider-input" min="0.3" max="0.8" step="0.1" .value=${this.silenceThreshold} @input=${this.handleSilenceChange} />
+                                <div class="slider-labels">
+                                    <span>Fast (0.3s)</span>
+                                    <span>Slow (0.8s)</span>
+                                </div>
+                            </div>
+                            <div class="form-description">Adjusts how long the AI waits for silence before responding.</div>
+                            
+                            <hr style="border: 0; border-top: 1px solid var(--card-border); margin: 8px 0;">
+
                             <div class="slider-header">
                                 <label class="form-label">Font Size</label>
                                 <span class="slider-value">${this.fontSize}px</span>

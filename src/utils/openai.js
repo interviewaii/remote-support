@@ -703,8 +703,13 @@ function stopMacOSAudioCapture() {
 function setupOpenAIIpcHandlers(sessionRef) {
     // Store the sessionRef globally for reconnection access
     global.openaiSessionRef = sessionRef;
+    let silenceThresholdMs = 500; // Default 500ms
 
-    ipcMain.handle('initialize-gemini', async (event, apiKey, customPrompt, resumeContext, profile = 'interview', language = 'en-US') => {
+    ipcMain.handle('initialize-gemini', async (event, apiKey, customPrompt, resumeContext, profile = 'interview', language = 'en-US', silenceThresholdParam = 0.5) => {
+        // Convert seconds (0.5) to ms (500)
+        silenceThresholdMs = Math.round(parseFloat(silenceThresholdParam) * 1000);
+        console.log(`Silence Threshold set to: ${silenceThresholdMs}ms`);
+
         const success = await initializeOpenAISession(apiKey, customPrompt, resumeContext, profile, language);
         if (success) {
             sessionRef.current = true; // Mark session as active
@@ -725,15 +730,15 @@ function setupOpenAIIpcHandlers(sessionRef) {
             // Accumulate audio chunks
             receivedAudioBuffer.push(audioBuffer);
 
-            // ADJUSTMENT: Since chunks are now 1.0s, we only need 1-2 chunks to process
-            const MIN_CHUNKS = 1; // 1 second minimum
-            const MAX_CHUNKS = 60; // 60 seconds maximum (Increased to support long questions)
+            // ADJUSTMENT: Chunks are now 0.25s for faster response
+            const MIN_CHUNKS = 4; // 1 second minimum (4 * 0.25s)
+            const MAX_CHUNKS = 240; // 60 seconds maximum (240 * 0.25s)
 
             // Reset silence timer on every chunk
             if (silenceTimer) clearTimeout(silenceTimer);
 
             if (receivedAudioBuffer.length >= MAX_CHUNKS && !isTranscribing && !isGenerating) {
-                // Safety fallback: Max buffer reached (60s)
+                // Safety fallback: Max buffer reached
                 console.log(`\n[MAX BUFFER] Processing ${receivedAudioBuffer.length} chunks...`);
                 processAudioBuffer();
             } else if (receivedAudioBuffer.length >= MIN_CHUNKS) {
@@ -742,7 +747,7 @@ function setupOpenAIIpcHandlers(sessionRef) {
                     if (receivedAudioBuffer.length >= MIN_CHUNKS && !isTranscribing && !isGenerating) {
                         processAudioBuffer().catch(err => console.error('Error:', err));
                     }
-                }, 2000); // 2.0s silence timeout (Increased to verify full question completion)
+                }, silenceThresholdMs); // Dynamic silence timeout
             }
             // If less than MIN_CHUNKS, just accumulate (no action)
 

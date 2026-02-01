@@ -323,6 +323,7 @@ export class AdvancedView extends LitElement {
         isClearing: { type: Boolean },
         statusMessage: { type: String },
         statusType: { type: String },
+        rateLimitReset: { type: Number },
         throttleTokens: { type: Boolean },
         maxTokensPerMin: { type: Number },
         throttleAtPercent: { type: Number },
@@ -466,6 +467,7 @@ export class AdvancedView extends LitElement {
     render() {
         return html`
             <div class="advanced-container">
+                                
                 <!-- Rate Limiting Section -->
                 <div class="advanced-section">
                     <div class="section-title">
@@ -556,12 +558,12 @@ export class AdvancedView extends LitElement {
                         </button>
 
                         ${this.statusMessage
-                            ? html`
+                ? html`
                                   <div class="status-message ${this.statusType === 'success' ? 'status-success' : 'status-error'}">
                                       ${this.statusMessage}
                                   </div>
                               `
-                            : ''}
+                : ''}
                     </div>
                 </div>
             </div>
