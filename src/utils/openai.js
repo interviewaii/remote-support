@@ -357,15 +357,22 @@ async function sendMessageToGroq(userMessage) {
             const groq = new Groq({ apiKey: currentKey, dangerouslyAllowBrowser: true, timeout: 20000 }); // 20s timeout
 
             // Build conversation messages (system prompt + history)
+            const p = lastSessionParams?.profile || 'interview';
+            const sPrompt = getSystemPrompt(
+                p,
+                lastSessionParams?.customPrompt || '',
+                lastSessionParams?.resumeContext || '',
+                false
+            );
+
+            console.log('DEBUG: Groq Profile:', p);
+            console.log('DEBUG: Groq ResumeContext Length:', (lastSessionParams?.resumeContext || '').length);
+            console.log('DEBUG: Groq System Prompt Preview:', sPrompt.substring(0, 200));
+
             const messages = [
                 {
                     role: 'system',
-                    content: getSystemPrompt(
-                        lastSessionParams?.profile || 'interview',
-                        lastSessionParams?.customPrompt || '',
-                        lastSessionParams?.resumeContext || '',
-                        false
-                    )
+                    content: sPrompt
                 }
             ];
 
@@ -872,33 +879,37 @@ function setupOpenAIIpcHandlers(sessionRef) {
             }
 
             const analysisPrompt = prompt || `Analyze this screenshot. ${stylePrompt}`;
-            console.log(`Processing image with GPT-4o Mini (Style: ${screenshotResponseStyle}). Tokens: ${styleMaxTokens}`);
+            console.log(`Processing image with Style: ${screenshotResponseStyle}, Quality: ${imageQuality || 'medium'}`);
 
-            // Use GPT-4o Mini and Low Detail for maximum cost efficiency
-            // GPT-4o Mini is significantly cheaper than GPT-4o
-            // detail: 'low' caps token usage at 85 tokens regardless of image size
+            // MODEL SELECTION: 'high' quality uses gpt-4o (Smarter), others use gpt-4o-mini (Faster/Cheaper)
+            const isHighQuality = imageQuality === 'high';
+            const visionModel = isHighQuality ? 'gpt-4o' : 'gpt-4o-mini';
+            const visionDetail = isHighQuality ? 'high' : 'low'; // High detail sees small text/code better
+
+            // Add Exam Instructions for High Quality
+            let finalPrompt = analysisPrompt;
+            if (isHighQuality) {
+                finalPrompt += " CRITICAL: Ensure code passes ALL hidden test cases (Edge cases: null, empty, bounds, negative numbers). Optimize for O(time).";
+            }
+
             const response = await openaiClient.chat.completions.create({
-                model: 'gpt-4o-mini', // Forced cost-effective model
+                model: visionModel,
                 messages: [
                     {
                         role: 'user',
                         content: [
-                            {
-                                type: 'text',
-                                // Concise prompt to save tokens
-                                text: analysisPrompt
-                            },
+                            { type: 'text', text: finalPrompt },
                             {
                                 type: 'image_url',
                                 image_url: {
                                     url: `data:image/jpeg;base64,${data}`,
-                                    detail: 'low' // Force low detail (85 tokens)
+                                    detail: visionDetail
                                 }
                             }
                         ]
                     }
                 ],
-                max_tokens: styleMaxTokens,
+                max_tokens: isHighQuality ? 2000 : styleMaxTokens,
             });
 
             const imageAnalysis = response.choices[0].message.content;

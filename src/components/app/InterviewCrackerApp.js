@@ -205,7 +205,13 @@ export class InterviewCrackerApp extends LitElement {
         this.startTime = null;
         this.isRecording = false;
         this.sessionActive = false;
-        this.selectedProfile = localStorage.getItem('selectedProfile') || 'interview';
+        // Force migration to 'student' if previously 'interview' (as requested by user to be default)
+        const storedProfile = localStorage.getItem('selectedProfile');
+        this.selectedProfile = (storedProfile === 'interview' || !storedProfile) ? 'student' : storedProfile;
+        // Update localStorage to reflect the forced change
+        if (this.selectedProfile === 'student' && storedProfile !== 'student') {
+            localStorage.setItem('selectedProfile', 'student');
+        }
         this.selectedLanguage = localStorage.getItem('selectedLanguage') || 'en-US';
         this.selectedScreenshotInterval = localStorage.getItem('selectedScreenshotInterval') || 'manual';
         this.selectedImageQuality = localStorage.getItem('selectedImageQuality') || 'medium';

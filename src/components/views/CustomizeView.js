@@ -654,7 +654,7 @@ export class CustomizeView extends LitElement {
 
     constructor() {
         super();
-        this.selectedProfile = 'interview';
+        this.selectedProfile = 'student';
         this.selectedLanguage = 'en-US';
         this.selectedScreenshotInterval = '5';
         this.selectedImageQuality = 'medium';
@@ -725,9 +725,16 @@ export class CustomizeView extends LitElement {
     getProfiles() {
         return [
             {
+                value: 'student',
+                name: 'Student / Candidate',
+                description: 'Act like a student/junior candidate (Imperfect, Eager, Resume-focused)',
+                icon: '🎓',
+                color: '#FFD700'
+            },
+            {
                 value: 'interview',
                 name: 'Job Interview',
-                description: 'Get help with answering interview questions',
+                description: 'Get help with answering interview questions (Professional)',
                 icon: '🧑‍💼',
                 color: '#5865f2'
             },
@@ -778,6 +785,7 @@ export class CustomizeView extends LitElement {
 
     getProfileNames() {
         return {
+            student: 'Student / Candidate',
             interview: 'Job Interview',
             coding: 'Coding Interview',
             sales: 'Sales Call',
