@@ -363,8 +363,8 @@ function setupWindowsAudioProcessing(systemStream, micStream) {
         }
         const rms = Math.sqrt(sum / inputData.length);
 
-        // Only buffer if sound is audible (Threshold: 0.03 - increased to prevent noise hallucinations)
-        if (rms > 0.03) {
+        // Only buffer if sound is audible (Threshold: 0.01 - reduced to capture soft speech)
+        if (rms > 0.01) {
             audioBuffer.push(...inputData);
         } else {
             // If it's silent, we still want to maintain timing but skip sending to Whisper
@@ -386,7 +386,7 @@ function setupWindowsAudioProcessing(systemStream, micStream) {
             }
             const chunkRms = Math.sqrt(chunkSum / chunk.length);
 
-            if (chunkRms > 0.03) {
+            if (chunkRms > 0.01) {
                 const pcmData16 = convertFloat32ToInt16(chunk);
                 const base64Data = arrayBufferToBase64(pcmData16.buffer);
 

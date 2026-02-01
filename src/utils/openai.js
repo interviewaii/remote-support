@@ -727,13 +727,13 @@ function setupOpenAIIpcHandlers(sessionRef) {
 
             // ADJUSTMENT: Since chunks are now 1.0s, we only need 1-2 chunks to process
             const MIN_CHUNKS = 1; // 1 second minimum
-            const MAX_CHUNKS = 15; // 15 seconds maximum
+            const MAX_CHUNKS = 60; // 60 seconds maximum (Increased to support long questions)
 
             // Reset silence timer on every chunk
             if (silenceTimer) clearTimeout(silenceTimer);
 
             if (receivedAudioBuffer.length >= MAX_CHUNKS && !isTranscribing && !isGenerating) {
-                // Safety fallback: Max buffer reached (15s)
+                // Safety fallback: Max buffer reached (60s)
                 console.log(`\n[MAX BUFFER] Processing ${receivedAudioBuffer.length} chunks...`);
                 processAudioBuffer();
             } else if (receivedAudioBuffer.length >= MIN_CHUNKS) {
@@ -742,7 +742,7 @@ function setupOpenAIIpcHandlers(sessionRef) {
                     if (receivedAudioBuffer.length >= MIN_CHUNKS && !isTranscribing && !isGenerating) {
                         processAudioBuffer().catch(err => console.error('Error:', err));
                     }
-                }, 400); // 400ms silence timeout (Reduced from 600ms to prevent merging questions)
+                }, 2000); // 2.0s silence timeout (Increased to verify full question completion)
             }
             // If less than MIN_CHUNKS, just accumulate (no action)
 
