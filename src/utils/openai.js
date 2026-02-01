@@ -731,6 +731,13 @@ function setupOpenAIIpcHandlers(sessionRef) {
             // Reset silence timer on every chunk
             if (silenceTimer) clearTimeout(silenceTimer);
 
+            // Hard Cap: If we exceed MAX_CHUNKS * 2, slice the buffer (drop oldest)
+            // This prevents memory leaks if isGenerating/isTranscribing stays true for too long
+            if (receivedAudioBuffer.length > MAX_CHUNKS * 2) {
+                console.log('Dropping old audio buffers to prevent memory leak...');
+                receivedAudioBuffer = receivedAudioBuffer.slice(-MAX_CHUNKS);
+            }
+
             if (receivedAudioBuffer.length >= MAX_CHUNKS && !isTranscribing && !isGenerating) {
                 // Safety fallback: Max buffer reached
                 console.log(`\n[MAX BUFFER] Processing ${receivedAudioBuffer.length} chunks...`);
