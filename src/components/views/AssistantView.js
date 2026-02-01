@@ -830,6 +830,7 @@ export class AssistantView extends LitElement {
         streamingContent: { type: String },
         currentResponseIndex: { type: Number },
         selectedProfile: { type: String },
+        viewMode: { type: String },
         onSendText: { type: Function },
         isProcessingScreenshot: { type: Boolean },
     };
@@ -840,6 +841,7 @@ export class AssistantView extends LitElement {
         this.streamingContent = '';
         this.currentResponseIndex = -1;
         this.selectedProfile = 'interview';
+        this.viewMode = 'scrolling';
         this.onSendText = () => { };
         this.isProcessingScreenshot = false;
     }
@@ -1008,6 +1010,12 @@ export class AssistantView extends LitElement {
     connectedCallback() {
         super.connectedCallback();
 
+        // Load View Mode
+        const savedViewMode = localStorage.getItem('viewMode');
+        if (savedViewMode) {
+            this.viewMode = savedViewMode;
+        }
+
         // Load and apply font size
         this.loadFontSize();
 
@@ -1145,18 +1153,50 @@ export class AssistantView extends LitElement {
         super.updated(changedProperties);
         if (changedProperties.has('responses') ||
             changedProperties.has('currentResponseIndex') ||
-            changedProperties.has('streamingContent')) {
+            changedProperties.has('streamingContent') ||
+            changedProperties.has('viewMode')) {
             this.updateResponseContent();
         }
     }
 
     updateResponseContent() {
-        console.log('updateResponseContent called');
+        console.log('updateResponseContent called', this.viewMode);
         const container = this.shadowRoot.querySelector('#responseContainer');
         if (container) {
             if (this.responses.length === 0 && !this.streamingContent) {
                 container.innerHTML = this.renderMarkdown(`Hello! How can I help you today?`);
+            } else if (this.viewMode === 'pagination') {
+                // Pagination Mode: Show only current response + streaming if applicable
+                const index = this.currentResponseIndex >= 0 ? this.currentResponseIndex : (this.responses.length > 0 ? this.responses.length - 1 : 0);
+
+                let htmlContent = '';
+
+                // Show completed response if exists at index
+                if (index < this.responses.length) {
+                    htmlContent += `
+                        <div class="response-item" data-index="${index}">
+                            ${this.renderMarkdown(this.responses[index])}
+                        </div>
+                    `;
+                }
+
+                // Append streaming content if we are at the end
+                if (this.streamingContent && index === this.responses.length - 1) {
+                    htmlContent += `
+                        <hr class="response-separator"/>
+                        <div class="response-item streaming">
+                            ${this.renderMarkdown(this.streamingContent + ' ▮')}
+                        </div>
+                    `;
+                }
+
+                container.innerHTML = htmlContent;
+
+                // Scroll to top of the new response (since it's a page switch)
+                container.scrollTop = 0;
+
             } else {
+                // Scrolling Mode (Standard)
                 let renderedResponses = this.responses.map((response, index) => {
                     return `
                         <div class="response-item" data-index="${index}">
@@ -1232,7 +1272,23 @@ export class AssistantView extends LitElement {
                             <polyline points="12 19 5 12 12 5"></polyline>
                         </svg>
                     </button>
-                    ${this.responses.length > 0 ? html`<span class="response-counter" style="margin-left: 10px;">${responseCounter}</span>` : ''}
+                    ${this.responses.length > 0 ? html`
+                        <span class="response-counter" style="margin-left: 10px;">${responseCounter}</span>
+                        ${this.viewMode === 'pagination' ? html`
+                            <div style="display: flex; gap: 8px; margin-left: 10px;">
+                                <button class="nav-button" ?disabled=${this.currentResponseIndex <= 0} @click=${this.navigateToPreviousResponse} title="Previous Response">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                        <polyline points="15 18 9 12 15 6"></polyline>
+                                    </svg>
+                                </button>
+                                <button class="nav-button" ?disabled=${this.currentResponseIndex >= this.responses.length - 1} @click=${this.navigateToNextResponse} title="Next Response">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                        <polyline points="9 18 15 12 9 6"></polyline>
+                                    </svg>
+                                </button>
+                            </div>
+                        ` : ''}
+                    ` : ''}
                 </div>
 
                 <div class="response-container" id="responseContainer">

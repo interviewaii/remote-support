@@ -636,6 +636,7 @@ export class CustomizeView extends LitElement {
         selectedImageQuality: { type: String },
         layoutMode: { type: String },
         keybinds: { type: Object },
+        viewMode: { type: String },
         googleSearchEnabled: { type: Boolean },
         backgroundTransparency: { type: Number },
         fontSize: { type: Number },
@@ -658,12 +659,14 @@ export class CustomizeView extends LitElement {
         this.selectedScreenshotInterval = '5';
         this.selectedImageQuality = 'medium';
         this.layoutMode = 'normal';
+        this.viewMode = 'scrolling';
         this.keybinds = this.getDefaultKeybinds();
         this.onProfileChange = () => { };
         this.onLanguageChange = () => { };
         this.onScreenshotIntervalChange = () => { };
         this.onImageQualityChange = () => { };
         this.onLayoutModeChange = () => { };
+        this.onViewModeChange = () => { };
         this.onAdvancedModeChange = () => { };
         this.onScreenshotResponseStyleChange = () => { };
 
@@ -696,6 +699,7 @@ export class CustomizeView extends LitElement {
         super.connectedCallback();
         // Load layout mode for display purposes
         this.loadLayoutMode();
+        this.loadViewMode();
         // Resize window for this view
         resizeLayout();
     }
@@ -829,6 +833,13 @@ export class CustomizeView extends LitElement {
         this.onLayoutModeChange(e.target.value);
     }
 
+    handleViewModeSelect(e) {
+        this.viewMode = e.target.value;
+        localStorage.setItem('viewMode', this.viewMode);
+        // Dispatch event or callback if needed, but localStorage is main sync
+        this.requestUpdate();
+    }
+
     handleCustomPromptInput(e) {
         localStorage.setItem('customPrompt', e.target.value);
     }
@@ -836,13 +847,13 @@ export class CustomizeView extends LitElement {
     getDefaultKeybinds() {
         const isMac = window.interviewCracker?.isMacOS || navigator.platform.includes('Mac');
         return {
-            moveUp: isMac ? 'Alt+Up' : 'Ctrl+Up',
-            moveDown: isMac ? 'Alt+Down' : 'Ctrl+Down',
-            moveLeft: isMac ? 'Alt+Left' : 'Ctrl+Left',
-            moveRight: isMac ? 'Alt+Right' : 'Ctrl+Right',
+            moveUp: isMac ? 'Alt+Up' : 'Shift+Alt+Up',
+            moveDown: isMac ? 'Alt+Down' : 'Shift+Alt+Down',
+            moveLeft: isMac ? 'Alt+Left' : 'Shift+Alt+Left',
+            moveRight: isMac ? 'Alt+Right' : 'Shift+Alt+Right',
             toggleVisibility: isMac ? 'Cmd+\\' : 'Ctrl+\\',
             toggleClickThrough: isMac ? 'Cmd+M' : 'Ctrl+M',
-            nextStep: isMac ? 'Cmd+Enter' : 'Ctrl+Enter',
+            nextStep: isMac ? 'Cmd+S' : 'Alt+S',
             previousResponse: isMac ? 'Cmd+[' : 'Ctrl+[',
             nextResponse: isMac ? 'Cmd+]' : 'Ctrl+]',
             scrollUp: isMac ? 'Cmd+Shift+Up' : 'Ctrl+Shift+Up',
@@ -1050,6 +1061,13 @@ export class CustomizeView extends LitElement {
         const savedLayoutMode = localStorage.getItem('layoutMode');
         if (savedLayoutMode) {
             this.layoutMode = savedLayoutMode;
+        }
+    }
+
+    loadViewMode() {
+        const savedViewMode = localStorage.getItem('viewMode');
+        if (savedViewMode) {
+            this.viewMode = savedViewMode;
         }
     }
 
@@ -1328,6 +1346,15 @@ export class CustomizeView extends LitElement {
                                 <button class="toggle-btn ${this.layoutMode === 'compact' ? 'active' : ''}" @click=${() => this.handleLayoutModeSelect({ target: { value: 'compact' } })}>Compact</button>
                             </div>
                             <div class="form-description">Switch up the UI for your style. ✨</div>
+
+                            <hr style="border: 0; border-top: 1px solid var(--card-border); margin: 16px 0;">
+
+                            <label class="form-label">View Mode</label>
+                            <div class="toggle-row">
+                                <button class="toggle-btn ${this.viewMode === 'scrolling' ? 'active' : ''}" @click=${() => this.handleViewModeSelect({ target: { value: 'scrolling' } })}>Scrolling</button>
+                                <button class="toggle-btn ${this.viewMode === 'pagination' ? 'active' : ''}" @click=${() => this.handleViewModeSelect({ target: { value: 'pagination' } })}>Pagination</button>
+                            </div>
+                            <div class="form-description">Choose "Pagination" to focus on one response at a time.</div>
                             
                             <div style="margin-top: 16px;">
                                 <div class="slider-header">

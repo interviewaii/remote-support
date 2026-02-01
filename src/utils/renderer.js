@@ -540,45 +540,14 @@ async function captureManualScreenshot(imageQuality = null) {
     }
 
     const quality = imageQuality || currentImageQuality;
-    const analysisPrompt = `Analyze this screenshot and identify any questions or problems that need to be solved. Provide a comprehensive answer following these guidelines:
+    const selectedProfile = localStorage.getItem('selectedProfile') || 'interview';
+    let analysisPrompt;
 
-**For Code Questions:**
-- First, identify the programming language and problem type
-- Provide a clear step-by-step approach in bullet points
-- Give the complete, working code solution
-- Include any important notes about edge cases or optimizations
-- If there are multiple approaches, mention the best one first
-
-**For Multiple Choice Questions (MCQ):**
-- Identify all the options clearly
-- Provide the correct answer with explanation
-- Explain why other options are incorrect (if applicable)
-- Include any relevant concepts or formulas needed
-
-**For Text/Theory Questions:**
-- Provide a complete, detailed answer
-- Include relevant examples or explanations
-- Mention any important concepts or definitions
-- If it's a step-by-step process, break it down clearly
-
-**For Math/Science Problems:**
-- Show the complete solution with steps
-- Include any formulas used
-- Provide the final answer clearly
-- Explain the reasoning behind each step
-
-**For Website/UI Questions:**
-- Identify the specific element or feature being asked about
-- Provide the complete answer or solution
-- Include any relevant technical details
-
-**Response Format:**
-- Start with "**Question Detected:**" followed by the identified question
-- Then provide your comprehensive answer
-- Use clear formatting with bullet points and sections
-- Be direct and complete - no unnecessary explanations
-
-Give me the answer immediately without any preamble.`;
+    if (selectedProfile === 'coding') {
+        analysisPrompt = `Analyze this screenshot and identify any coding questions. Provide a structured solution approach (Problem, Approach, Code, Explanation).`;
+    } else {
+        analysisPrompt = `Analyze this screenshot and identify the interview question. Provide a natural, conversational, human-like response.`;
+    }
 
     await captureScreenshot(quality, true, analysisPrompt); // Pass true for isManual and the prompt
 
