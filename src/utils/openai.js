@@ -331,15 +331,15 @@ async function sendMessageToGroq(userMessage) {
             }
         ];
 
-        // Add history with truncation to prevent context overflow/stuck issues
-        const MAX_HISTORY_TURNS = 10;
+        // Add history with STRICT truncation for Free Tier Limits (40k TPM)
+        const MAX_HISTORY_TURNS = 6; // Reduced from 10 to safe-guard prompt size
         const recentHistory = conversationHistory.slice(-MAX_HISTORY_TURNS);
         recentHistory.forEach(turn => {
-            // Truncate very long previous responses (like huge code blocks from screenshots)
-            // to keep context light and fast for Groq
+            // Truncate previous responses significantly to save tokens
+            // 1200 chars is roughly 300-400 tokens
             let prevResponse = turn.ai_response;
-            if (prevResponse && prevResponse.length > 2000) {
-                prevResponse = prevResponse.substring(0, 2000) + "... [truncated]";
+            if (prevResponse && prevResponse.length > 1200) {
+                prevResponse = prevResponse.substring(0, 1200) + "... [truncated for context limit]";
             }
             messages.push({ role: 'user', content: turn.transcription });
             messages.push({ role: 'assistant', content: prevResponse });
@@ -347,7 +347,7 @@ async function sendMessageToGroq(userMessage) {
 
         messages.push({ role: 'user', content: userMessage });
 
-        console.log('Sending message to Groq (Llama 3.3)...');
+        console.log(`Sending message to Groq (Context: ${recentHistory.length} turns)...`);
         messageBuffer = '';
 
         // Add explicit timeout race
@@ -355,7 +355,7 @@ async function sendMessageToGroq(userMessage) {
             messages: messages,
             model: "llama-3.3-70b-versatile",
             temperature: 0.7,
-            max_tokens: 4096,
+            max_tokens: 2048, // Reduced from 4096 to prevent runaway usage
             top_p: 1,
             stream: true,
             stop: null
