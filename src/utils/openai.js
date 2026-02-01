@@ -4,6 +4,9 @@ const { BrowserWindow, ipcMain } = require('electron');
 const { spawn } = require('child_process');
 const { saveDebugAudio } = require('../audioUtils');
 const { getSystemPrompt } = require('./prompts');
+const fs = require('fs');
+const pdf = require('pdf-parse');
+const mammoth = require('mammoth');
 
 // Conversation tracking variables
 let currentSessionId = null;
@@ -406,7 +409,7 @@ async function sendMessageToGroq(userMessage) {
             });
 
             const timeoutPromise = new Promise((_, reject) =>
-                setTimeout(() => reject(new Error('Groq request timed out')), 8000) // Reduced to 8s for faster failover
+                setTimeout(() => reject(new Error('Groq request timed out')), 2000) // 2s timeout for fast fallback
             );
 
             const startTime = Date.now();
@@ -437,49 +440,40 @@ async function sendMessageToGroq(userMessage) {
 
             // Success! Break loop
             isGenerating = false;
-            return;
+            return true; // Signal success
 
         } catch (error) {
             console.error(`Error with Groq Key ${currentGroqKeyIndex}:`, error.message);
 
-            // Check if we should rotate key
-            // 429 = Rate Limit, 401 = Invalid Key, 403 = Forbidden
-            const isRateLimit = error.message.includes('429') || error.message.includes('401') || error.status === 429 || error.status === 401;
-
-            if (isRateLimit) {
-                console.warn(`Key ${currentGroqKeyIndex} exhausted or invalid. Switching to next key...`);
-                currentGroqKeyIndex = (currentGroqKeyIndex + 1) % keys.length;
-                attempts++;
-                sendToRenderer('update-status', `Rate limited. Switching to API Key ${currentGroqKeyIndex + 1}...`);
-                // Continue loop to try next key
-                continue;
-            } else {
-                // Other errors (timeout, network) -> Don't rotate, just fail (or could retry same key)
-                sendToRenderer('update-status', 'Error: ' + error.message);
-
-                // Auto-recover state
-                setTimeout(() => {
-                    sendToRenderer('update-status', 'Listening (Groq)...');
-                }, 3000);
-
-                isGenerating = false;
-                return;
-            }
+            // AGGRESSIVE ROTATION: Rotate key on ANY error (Timeout, 429, 401, 500, etc.)
+            console.warn(`Key ${currentGroqKeyIndex} failed/timed out. Switching to next key...`);
+            currentGroqKeyIndex = (currentGroqKeyIndex + 1) % keys.length;
+            attempts++;
+            sendToRenderer('update-status', `Groq Error. Switching to Key ${currentGroqKeyIndex + 1}...`);
+            // Continue loop to try next key immediately
+            continue;
         }
     }
 
     // If we land here, all keys failed
     console.error('All Groq API keys exhausted.');
-    sendToRenderer('update-status', 'Error: All API Keys Exhausted/Limit Reached');
+    sendToRenderer('update-status', 'Error: All Groq Keys Failed. Switching to OpenAI...');
     isGenerating = false;
+    return false; // Signal failure to trigger fallback
 }
 
 
 async function sendMessageToOpenAI(userMessage) {
     // HYBRID ROUTING CHECK
     if (process.env.GROQ_API_KEY) {
-        console.log('Hybrid Mode: Routing chat to Groq...');
-        return sendMessageToGroq(userMessage);
+        console.log('Hybrid Mode: Routing chat to Groq (Exclusive)...');
+        const groqSuccess = await sendMessageToGroq(userMessage);
+
+        if (!groqSuccess) {
+            console.error('❌ Groq failed after trying all keys. NOT falling back to OpenAI (User Preference).');
+            sendToRenderer('update-status', 'Error: All Groq Keys Failed');
+        }
+        return; // ALWAYS return here if Groq is enabled. Do not run OpenAI logic for chat.
     }
 
     if (!openaiClient) {
@@ -1010,6 +1004,34 @@ function setupOpenAIIpcHandlers(sessionRef) {
             return { success: true };
         } catch (error) {
             console.error('Error closing session:', error);
+            return { success: false, error: error.message };
+        }
+    });
+
+    ipcMain.handle('read-file-content', async (event, filePath) => {
+        try {
+            if (!fs.existsSync(filePath)) {
+                return { success: false, error: 'File not found' };
+            }
+
+            const ext = filePath.split('.').pop().toLowerCase();
+            let text = '';
+
+            if (ext === 'pdf') {
+                const dataBuffer = fs.readFileSync(filePath);
+                const data = await pdf(dataBuffer);
+                text = data.text;
+            } else if (ext === 'docx' || ext === 'doc') {
+                const result = await mammoth.extractRawText({ path: filePath });
+                text = result.value;
+            } else {
+                // Default to text read
+                text = fs.readFileSync(filePath, 'utf8');
+            }
+
+            return { success: true, content: text };
+        } catch (error) {
+            console.error('Error reading file:', error);
             return { success: false, error: error.message };
         }
     });

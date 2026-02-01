@@ -854,6 +854,51 @@ export class CustomizeView extends LitElement {
         localStorage.setItem('customPrompt', e.target.value);
     }
 
+    async handleResumeUpload(e) {
+        const file = e.target.files[0];
+        if (!file) return;
+
+        // Store filename for UI feedback
+        this.resumeFileName = file.name;
+
+        // Show loading state
+        const originalText = localStorage.getItem('resumeContext') || '';
+        this.requestUpdate();
+
+        if (window.require) {
+            try {
+                const { ipcRenderer } = window.require('electron');
+
+                // Use file.path (Electron adds this to File objects)
+                // Note: file.path is available in Electron renderer but not standard web
+                if (file.path) {
+                    const result = await ipcRenderer.invoke('read-file-content', file.path);
+
+                    if (result && result.success) {
+                        const parsedText = result.content;
+                        // Save to localStorage and update UI
+                        localStorage.setItem('resumeContext', parsedText);
+                        this.requestUpdate(); // Re-render to show text in textarea
+                        alert(`✓ Successfully parsed resume!`);
+                    } else {
+                        console.error('Failed to parse file:', result.error);
+                        alert(`❌ Failed to read file: ${result.error}`);
+                    }
+                } else {
+                    alert('Error: Cannot access file path. Are you running in Electron?');
+                }
+            } catch (error) {
+                console.error('Error uploading/parsing resume:', error);
+                alert(`Error: ${error.message}`);
+            }
+        } else {
+            alert('File parsing is only available in the desktop application.');
+        }
+
+        // Reset file input so same file can be selected again
+        e.target.value = '';
+    }
+
     getDefaultKeybinds() {
         const isMac = window.interviewCracker?.isMacOS || navigator.platform.includes('Mac');
         return {
@@ -1261,6 +1306,9 @@ export class CustomizeView extends LitElement {
                 <button class="tab-btn ${this.activeTab === 'language' ? 'active' : ''}" @click=${() => this.setTab('language')}>
                     <span>🌐</span> Language
                 </button>
+                <button class="tab-btn ${this.activeTab === 'resume' ? 'active' : ''}" @click=${() => this.setTab('resume')}>
+                    <span>📄</span> Resume
+                </button>
                 <button class="tab-btn ${this.activeTab === 'layout' ? 'active' : ''}" @click=${() => this.setTab('layout')}>
                     <span>🖥️</span> Layout
                 </button>
@@ -1287,42 +1335,50 @@ export class CustomizeView extends LitElement {
                                     </div>
                                 `)}
                             </div>
-                            <div class="form-group">
+                            <div class="form-group" style="margin-top: 20px;">
                                 <label class="form-label">Custom AI Instructions</label>
                                 <textarea class="form-control" placeholder="How should the AI behave? Be creative!" .value=${localStorage.getItem('customPrompt') || ''} rows="3" @input=${this.handleCustomPromptInput} @keydown=${this.handleKeyDown} @paste=${this.handlePaste}></textarea>
                                 <div class="form-text">Example: "Act as a strict interviewer", "Be funny and casual"</div>
                             </div>
+                        </div>
+                    </div>
+                ` : ''}
+                ${this.activeTab === 'resume' ? html`
+                    <div class="settings-card">
+                        <div class="card-title"><span>📄</span> Upload Resume (Context)</div>
+                        <div class="card-content">
                             <div class="form-group">
-                                <label class="form-label">Upload Resume (Context)</label>
-                                <div style="display: flex; align-items: center; gap: 10px;">
-                                    <label class="toggle-btn" style="cursor: pointer; display: inline-flex; align-items: center; gap: 6px; width: 100%; justify-content: center;">
-                                        <span>📄</span> Upload Resume (PDF, Word, TXT)
+                                <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 15px;">
+                                    <label class="toggle-btn" style="cursor: pointer; display: inline-flex; align-items: center; gap: 6px; width: 100%; justify-content: center; padding: 12px;">
+                                        <span style="font-size: 1.2em;">📂</span> Upload Resume File
                                         <input type="file" accept=".txt,.md,.json,.pdf,.doc,.docx" style="display: none" @change=${this.handleResumeUpload} />
                                     </label>
                                 </div>
+                                
                                 ${this.resumeFileName ? html`
-                                    <div style="font-size: 12px; color: var(--accent-color); margin-top: 4px; text-align: center;">✓ ${this.resumeFileName}</div>
+                                    <div style="font-size: 13px; color: var(--accent-color); margin: 10px 0; text-align: center; font-weight: 500;">
+                                        ✓ Loaded: ${this.resumeFileName}
+                                    </div>
                                     
                                     ${(this.resumeFileName.endsWith('.pdf') || this.resumeFileName.endsWith('.doc') || this.resumeFileName.endsWith('.docx')) ? html`
-                                        <div style="font-size: 11px; color: #ffab00; margin-top: 8px; padding: 6px; background: rgba(255, 171, 0, 0.1); border-radius: 4px; border: 1px solid rgba(255, 171, 0, 0.2);">
-                                            ⚠️ <strong>Note:</strong> We can't read this file type automatically yet. Please copy and paste the text from your resume below so the AI can use it.
+                                        <div style="font-size: 12px; color: #ffab00; margin: 10px 0; padding: 10px; background: rgba(255, 171, 0, 0.1); border-radius: 6px; border: 1px solid rgba(255, 171, 0, 0.2);">
+                                            ⚠️ <strong>Action Required:</strong> We cannot read this file type automatically. Please Copy & Paste the text from your resume into the box below.
                                         </div>
                                     ` : ''}
-
-                                    <div style="margin-top: 10px;">
-                                        <label class="form-label">Resume Content</label>
-                                        <textarea 
-                                            class="form-control" 
-                                            placeholder="Paste your resume text here..." 
-                                            .value=${localStorage.getItem('resumeContext') || ''} 
-                                            rows="6" 
-                                            @input=${this.handleResumeContentInput} 
-                                            @keydown=${this.handleKeyDown} 
-                                            @paste=${this.handlePaste}
-                                        ></textarea>
-                                    </div>
                                 ` : ''}
-                                <div class="form-text">Upload your resume to give the AI context. Text files work best!</div>
+
+                                <label class="form-label">Resume Text Content</label>
+                                <textarea 
+                                    class="form-control" 
+                                    placeholder="Paste your full resume text here. The AI will use this to personalize your answers with the STAR method." 
+                                    .value=${localStorage.getItem('resumeContext') || ''} 
+                                    rows="12" 
+                                    style="font-family: monospace; font-size: 13px; line-height: 1.4;"
+                                    @input=${this.handleResumeContentInput} 
+                                    @keydown=${this.handleKeyDown} 
+                                    @paste=${this.handlePaste}
+                                ></textarea>
+                                <div class="form-text">The more details you provide here, the better the AI can simulate your actual experience.</div>
                             </div>
                         </div>
                     </div>
