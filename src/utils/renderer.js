@@ -569,7 +569,21 @@ async function captureManualScreenshot(imageQuality = null) {
 - Be concise but complete.
 - Go straight to the solution.`;
     } else {
-        analysisPrompt = `Analyze this screenshot and identify the interview question. Provide a natural, conversational, human-like response.`;
+        // Normal/Job Interview - Direct, Confident, Human-like
+        analysisPrompt = `Analyze this screenshot and identify the interview question. Provide a direct, confident answer as if you are the candidate.
+
+**Structure:**
+1. **Direct Answer:** Start immediately with the core answer or definition.
+2. **Key Concepts:** Briefly mention 2-3 key points (e.g., "Virtual DOM", "Diffing", "State vs Props") if applicable.
+3. **Comparison (if needed):** Use a quick "vs" comparison for difference-type questions.
+
+**Tone:**
+- Confident, professional, but human.
+- Avoid robotic intros like "Here is the answer".
+- Be concise (aim for < 100 words unless complex).
+
+**Example Style:**
+"React is a library for building UIs... it uses a Virtual DOM to improve performance..."`;
     }
 
     await captureScreenshot(quality, true, analysisPrompt); // Pass true for isManual and the prompt

@@ -300,8 +300,18 @@ function createWavHeader(dataLength, sampleRate, channels, bitsPerSample) {
     return header;
 }
 
+
+// Helper to get available Groq keys
+function getGroqKeys() {
+    if (!process.env.GROQ_API_KEY) return [];
+    return process.env.GROQ_API_KEY.split(',').map(k => k.trim()).filter(k => k.length > 0);
+}
+
+let currentGroqKeyIndex = 0;
+
 async function sendMessageToGroq(userMessage) {
-    if (!process.env.GROQ_API_KEY) {
+    const keys = getGroqKeys();
+    if (keys.length === 0) {
         console.error('GROQ_API_KEY missing');
         return;
     }
@@ -313,98 +323,129 @@ async function sendMessageToGroq(userMessage) {
     }
 
     isGenerating = true;
+    let attempts = 0;
+    const maxAttempts = keys.length; // Try each key once
 
-    try {
-        sendToRenderer('update-status', 'Thinking (Groq)...');
-        const groq = new Groq({ apiKey: process.env.GROQ_API_KEY, dangerouslyAllowBrowser: true, timeout: 20000 }); // 20s timeout
+    while (attempts < maxAttempts) {
+        const currentKey = keys[currentGroqKeyIndex];
 
-        // Build conversation messages (system prompt + history)
-        const messages = [
-            {
-                role: 'system',
-                content: getSystemPrompt(
-                    lastSessionParams?.profile || 'interview',
-                    lastSessionParams?.customPrompt || '',
-                    lastSessionParams?.resumeContext || '',
-                    false
-                )
+        try {
+            sendToRenderer('update-status', `Thinking (Groq Key ${currentGroqKeyIndex + 1})...`);
+
+            // Re-initialize Groq with current key
+            const groq = new Groq({ apiKey: currentKey, dangerouslyAllowBrowser: true, timeout: 20000 }); // 20s timeout
+
+            // Build conversation messages (system prompt + history)
+            const messages = [
+                {
+                    role: 'system',
+                    content: getSystemPrompt(
+                        lastSessionParams?.profile || 'interview',
+                        lastSessionParams?.customPrompt || '',
+                        lastSessionParams?.resumeContext || '',
+                        false
+                    )
+                }
+            ];
+
+            // Add history with STRICT truncation for Free Tier Limits (40k TPM)
+            const MAX_HISTORY_TURNS = 6;
+            const recentHistory = conversationHistory.slice(-MAX_HISTORY_TURNS);
+            recentHistory.forEach(turn => {
+                let prevResponse = turn.ai_response;
+                if (prevResponse && prevResponse.length > 1200) {
+                    prevResponse = prevResponse.substring(0, 1200) + "... [truncated for context limit]";
+                }
+                messages.push({ role: 'user', content: turn.transcription });
+                messages.push({ role: 'assistant', content: prevResponse });
+            });
+
+            messages.push({ role: 'user', content: userMessage });
+
+            console.log(`Sending message to Groq (Key Index: ${currentGroqKeyIndex})...`);
+
+            messageBuffer = '';
+
+            // Add explicit timeout race
+            const completionPromise = groq.chat.completions.create({
+                messages: messages,
+                model: "llama-3.3-70b-versatile",
+                temperature: 0.7,
+                max_tokens: 2048,
+                top_p: 1,
+                stream: true,
+                stop: null
+            });
+
+            const timeoutPromise = new Promise((_, reject) =>
+                setTimeout(() => reject(new Error('Groq request timed out')), 20000)
+            );
+
+            const startTime = Date.now();
+            const stream = await Promise.race([completionPromise, timeoutPromise]);
+            currentStream = stream;
+
+            for await (const chunk of stream) {
+                const content = chunk.choices[0]?.delta?.content || '';
+                if (content) {
+                    messageBuffer += content;
+                    sendToRenderer('update-response-stream', content);
+                }
             }
-        ];
 
-        // Add history with STRICT truncation for Free Tier Limits (40k TPM)
-        const MAX_HISTORY_TURNS = 6; // Reduced from 10 to safe-guard prompt size
-        const recentHistory = conversationHistory.slice(-MAX_HISTORY_TURNS);
-        recentHistory.forEach(turn => {
-            // Truncate previous responses significantly to save tokens
-            // 1200 chars is roughly 300-400 tokens
-            let prevResponse = turn.ai_response;
-            if (prevResponse && prevResponse.length > 1200) {
-                prevResponse = prevResponse.substring(0, 1200) + "... [truncated for context limit]";
+            const endTime = Date.now();
+            const responseTimeSeconds = ((endTime - startTime) / 1000).toFixed(1);
+
+            console.log(`Groq Latency: ${responseTimeSeconds}s | Length: ${messageBuffer.length}`);
+
+            const finalResponse = `${messageBuffer}\n\n*[Response Time: ${responseTimeSeconds}s | Key: ${currentGroqKeyIndex + 1}]*`;
+            sendToRenderer('update-response', finalResponse);
+
+            if (userMessage && messageBuffer) {
+                saveConversationTurn(userMessage, finalResponse);
             }
-            messages.push({ role: 'user', content: turn.transcription });
-            messages.push({ role: 'assistant', content: prevResponse });
-        });
 
-        messages.push({ role: 'user', content: userMessage });
-
-        console.log(`Sending message to Groq (Context: ${recentHistory.length} turns)...`);
-        messageBuffer = '';
-
-        // Add explicit timeout race
-        const completionPromise = groq.chat.completions.create({
-            messages: messages,
-            model: "llama-3.3-70b-versatile",
-            temperature: 0.7,
-            max_tokens: 2048, // Reduced from 4096 to prevent runaway usage
-            top_p: 1,
-            stream: true,
-            stop: null
-        });
-
-        const timeoutPromise = new Promise((_, reject) =>
-            setTimeout(() => reject(new Error('Groq request timed out')), 20000)
-        );
-
-        const startTime = Date.now();
-        const stream = await Promise.race([completionPromise, timeoutPromise]);
-        currentStream = stream;
-
-        for await (const chunk of stream) {
-            const content = chunk.choices[0]?.delta?.content || '';
-            if (content) {
-                messageBuffer += content;
-                sendToRenderer('update-response-stream', content);
-            }
-        }
-
-        const endTime = Date.now();
-        const responseTimeSeconds = ((endTime - startTime) / 1000).toFixed(1);
-
-        console.log(`Groq Latency: ${responseTimeSeconds}s | Length: ${messageBuffer.length}`);
-
-        // Include response time in the message for the user
-        const finalResponse = `${messageBuffer}\n\n*[Response Time: ${responseTimeSeconds}s]*`;
-        sendToRenderer('update-response', finalResponse);
-
-        if (userMessage && messageBuffer) {
-            saveConversationTurn(userMessage, finalResponse);
-        }
-
-        sendToRenderer('update-status', 'Listening (Groq)...');
-
-    } catch (error) {
-        console.error('Error sending to Groq:', error);
-        sendToRenderer('update-status', 'Error: ' + error.message);
-
-        // Auto-recover state
-        setTimeout(() => {
             sendToRenderer('update-status', 'Listening (Groq)...');
-        }, 3000);
 
-    } finally {
-        isGenerating = false;
+            // Success! Break loop
+            isGenerating = false;
+            return;
+
+        } catch (error) {
+            console.error(`Error with Groq Key ${currentGroqKeyIndex}:`, error.message);
+
+            // Check if we should rotate key
+            // 429 = Rate Limit, 401 = Invalid Key, 403 = Forbidden
+            const isRateLimit = error.message.includes('429') || error.message.includes('401') || error.status === 429 || error.status === 401;
+
+            if (isRateLimit) {
+                console.warn(`Key ${currentGroqKeyIndex} exhausted or invalid. Switching to next key...`);
+                currentGroqKeyIndex = (currentGroqKeyIndex + 1) % keys.length;
+                attempts++;
+                sendToRenderer('update-status', `Rate limited. Switching to API Key ${currentGroqKeyIndex + 1}...`);
+                // Continue loop to try next key
+                continue;
+            } else {
+                // Other errors (timeout, network) -> Don't rotate, just fail (or could retry same key)
+                sendToRenderer('update-status', 'Error: ' + error.message);
+
+                // Auto-recover state
+                setTimeout(() => {
+                    sendToRenderer('update-status', 'Listening (Groq)...');
+                }, 3000);
+
+                isGenerating = false;
+                return;
+            }
+        }
     }
+
+    // If we land here, all keys failed
+    console.error('All Groq API keys exhausted.');
+    sendToRenderer('update-status', 'Error: All API Keys Exhausted/Limit Reached');
+    isGenerating = false;
 }
+
 
 async function sendMessageToOpenAI(userMessage) {
     // HYBRID ROUTING CHECK
