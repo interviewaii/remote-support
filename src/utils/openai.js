@@ -198,15 +198,36 @@ async function initializeOpenAISession(apiKey, customPrompt = '', resumeContext 
         }
 
         // Test connectivity based on mode
+        // Test connectivity based on mode
         if (process.env.GROQ_API_KEY) {
-            // Test Groq
-            const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
-            await groq.chat.completions.create({
-                messages: [{ role: 'user', content: 'hi' }],
-                model: "llama-3.3-70b-versatile",
-                max_tokens: 1,
-            });
-            console.log('Groq connectivity verified.');
+            // Test Groq Keys (Loop through all to find first valid one)
+            const keys = getGroqKeys();
+            let activeKeyFound = false;
+
+            for (let i = 0; i < keys.length; i++) {
+                try {
+                    console.log(`Testing Groq Key Index ${i}...`);
+                    const groq = new Groq({ apiKey: keys[i], dangerouslyAllowBrowser: true, timeout: 5000 });
+                    await groq.chat.completions.create({
+                        messages: [{ role: 'user', content: 'hi' }],
+                        model: "llama-3.3-70b-versatile",
+                        max_tokens: 1,
+                    });
+                    console.log(`Groq connectivity verified with Key Index ${i}.`);
+                    currentGroqKeyIndex = i; // Set the working key as default
+                    activeKeyFound = true;
+                    break; // Stop testing once we find a working key
+                } catch (err) {
+                    console.warn(`Groq Key Index ${i} failed verification: ${err.message}`);
+                    // Continue to next key
+                }
+            }
+
+            if (!activeKeyFound) {
+                console.error('All Groq keys failed verification.');
+                // We don't throw error here to allow purely OpenAI fallback if available, 
+                // or just let it fail later in chat.
+            }
         } else if (openaiClient) {
             // Test OpenAI
             await openaiClient.chat.completions.create({
@@ -378,7 +399,7 @@ async function sendMessageToGroq(userMessage) {
             });
 
             const timeoutPromise = new Promise((_, reject) =>
-                setTimeout(() => reject(new Error('Groq request timed out')), 20000)
+                setTimeout(() => reject(new Error('Groq request timed out')), 8000) // Reduced to 8s for faster failover
             );
 
             const startTime = Date.now();
@@ -714,7 +735,7 @@ function setupOpenAIIpcHandlers(sessionRef) {
                     if (receivedAudioBuffer.length >= MIN_CHUNKS && !isTranscribing && !isGenerating) {
                         processAudioBuffer().catch(err => console.error('Error:', err));
                     }
-                }, 600); // 600ms silence timeout
+                }, 400); // 400ms silence timeout (Reduced from 600ms to prevent merging questions)
             }
             // If less than MIN_CHUNKS, just accumulate (no action)
 
@@ -764,22 +785,30 @@ function setupOpenAIIpcHandlers(sessionRef) {
             const wordCount = text.split(/\s+/).length;
 
             // 1. Strict Hallucination Filter (Common Whisper artifacts on noise)
-            const hallucinations = /^(you|thanks?|thank you|bye|goodbye|you\.|thanks\.|subs? by|subtitle|thank you for watching|please subscribe|unintelligible|\[music\]|\[audio\]|\[silence\]|silence|amara\.org|subtitles by|copyright|all rights reserved)$/i;
+            const hallucinations = /^(you|thanks?|thank you|bye|goodbye|you\.|thanks\.|subs? by|subtitle|thank you for watching|please subscribe|unintelligible|\[music\]|\[audio\]|\[silence\]|silence|amara\.org|subtitles by|copyright|all rights reserved|next|previous|select|start|stop|end|loading|buffering|transcript|transcription)$/i;
 
-            // OPTIMIZED: Allow short valid questions (3+ chars) but filter single-word noise
-            // Ignore very short inputs with only 1 word (likely noise like "He", "It", "Uh")
-            if (wordCount === 1 && lowerText.length < 3) {
-                console.log(`Filtered single-word noise: "${text}"`);
+            // 2. Question/Relevance Triggers (Keywords that imply a valid query)
+            const validQuestionTriggers = /^(what|how|why|when|who|where|explain|define|describe|code|write|create|compare|difference|solve|fix|debug|optimize|tell|can|could|would|is|are|do|does|did|show|list|give)\b/i;
+
+            // 3. Tech Keywords (Allow these even if single words)
+            const validTechKeywords = /^(java|python|react|node|javascript|sql|nosql|docker|kubernetes|aws|azure|spring|api|rest|graphql|redux|html|css|algorithm|structure|system|design|database|linux|git|agile|scrum|testing|jest|junit|maven|gradle|jenkins|devops|cloud|microservices|frontend|backend|fullstack|net|c#|cpp|security|performance|scaling|caching|redis|kafka|mongodb|postgres|mysql|oracle)\b/i;
+
+            // OPTIMIZED NOISE FILTER:
+            // Rule 1: Ignore very short inputs (under 4 words) UNLESS they start with a valid question trigger OR are a tech keyword
+            // This filters out "Okay yeah", "Right right", "Um uh", background chatter
+            // But ALLOWS "React", "Java", "Docker", "Explain this"
+            if (wordCount < 4 && !validQuestionTriggers.test(lowerText) && !validTechKeywords.test(lowerText)) {
+                console.log(`Filtered short noise (No trigger/keyword): "${text}"`);
                 return;
             }
 
-            // Filter common hallucinations only if very short (< 15 chars)
-            if (lowerText.length < 15 && hallucinations.test(lowerText)) {
+            // Rule 2: Strict Hallucination Check
+            if (hallucinations.test(lowerText) || (lowerText.length < 20 && hallucinations.test(lowerText))) {
                 console.log(`Filtered Whisper hallucination: "${text}"`);
                 return;
             }
 
-            // 2. Duplicate & Recency Check - OPTIMIZED: 5s window for faster re-engagement
+            // 3. Duplicate & Recency Check - OPTIMIZED: 5s window for faster re-engagement
             const now = Date.now();
 
             if (text === lastSentTranscription && (now - lastSentTimestamp < 5000)) {
