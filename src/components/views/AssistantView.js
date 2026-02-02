@@ -863,96 +863,7 @@ export class AssistantView extends LitElement {
             : `Hello! How can I help you today?`;
     }
 
-    renderMarkdown(content) {
-        // Check if marked is available
-        if (typeof window !== 'undefined' && window.marked) {
-            try {
-                // Pre-process content to handle response time badge
-                let processedContent = content;
-                if (content.includes('*[Response Time:')) {
-                    processedContent = content.replace(/\*\[Response Time: (.*?)s\]\*/g,
-                        '<div class="response-time-badge">⚡ Response Time: $1s</div>');
-                }
 
-                // Configure marked for better security and formatting
-                window.marked.setOptions({
-                    breaks: true,
-                    gfm: true,
-                    sanitize: false, // We handle processing and rely on it for our badge HTML
-                });
-                let rendered = window.marked.parse(processedContent);
-
-                // Add copy buttons to code blocks
-                rendered = this.addCopyButtonsToCodeBlocks(rendered);
-
-                return rendered;
-            } catch (error) {
-                console.warn('Error parsing markdown:', error);
-                return content; // Fallback to plain text
-            }
-        }
-        return content; // Fallback if marked is not available
-    }
-
-    addCopyButtonsToCodeBlocks(html) {
-        // Replace <pre><code> blocks with copy button and syntax highlighting
-        return html.replace(
-            /<pre><code[^>]*>([\s\S]*?)<\/code><\/pre>/g,
-            (match, codeContent) => {
-                const cleanCode = codeContent
-                    .replace(/&lt;/g, '<')
-                    .replace(/&gt;/g, '>')
-                    .replace(/&amp;/g, '&')
-                    .replace(/&quot;/g, '"')
-                    .replace(/&#39;/g, "'");
-
-                // Apply syntax highlighting if highlight.js is available
-                let highlightedCode = codeContent;
-                if (window.hljs) {
-                    try {
-                        // Try to detect language from code content
-                        const language = this.detectLanguage(cleanCode);
-                        if (language) {
-                            highlightedCode = window.hljs.highlight(cleanCode, { language }).value;
-                        } else {
-                            highlightedCode = window.hljs.highlightAuto(cleanCode).value;
-                        }
-                    } catch (error) {
-                        console.warn('Syntax highlighting failed:', error);
-                        highlightedCode = codeContent;
-                    }
-                }
-
-                return `<pre><code class="hljs">${highlightedCode}</code><button class="copy-button" onclick="copyCode(this, \`${cleanCode.replace(/`/g, '\\`')}\`)">Copy</button></pre>`;
-            }
-        );
-    }
-
-    detectLanguage(code) {
-        // Simple language detection based on code patterns
-        const patterns = {
-            'javascript': /(function|const|let|var|=>|console\.|\.js$)/i,
-            'python': /(def |import |from |print\(|\.py$)/i,
-            'java': /(public |class |import |System\.|\.java$)/i,
-            'cpp': /(#include|std::|cout|cin|\.cpp$|\.h$)/i,
-            'csharp': /(using |namespace |class |Console\.|\.cs$)/i,
-            'php': /(<\?php|echo |function |\$[a-zA-Z_])/i,
-            'ruby': /(def |puts |require |\.rb$)/i,
-            'go': /(package |import |func |fmt\.|\.go$)/i,
-            'rust': /(fn |let |mut |println!|\.rs$)/i,
-            'sql': /(SELECT|INSERT|UPDATE|DELETE|CREATE|DROP|FROM|WHERE)/i,
-            'html': /(<html|<head|<body|<div|<span|<p>)/i,
-            'css': /(\.|#|\{|margin|padding|color|background)/i,
-            'bash': /(#!\/bin|echo |ls |cd |mkdir|rm |chmod)/i
-        };
-
-        for (const [lang, pattern] of Object.entries(patterns)) {
-            if (pattern.test(code)) {
-                return lang;
-            }
-        }
-        return null;
-    }
 
     getResponseCounter() {
         return this.responses.length > 0 ? `${this.currentResponseIndex + 1}/${this.responses.length}` : '';
@@ -1160,72 +1071,9 @@ export class AssistantView extends LitElement {
     }
 
     updateResponseContent() {
-        console.log('updateResponseContent called', this.viewMode);
-        const container = this.shadowRoot.querySelector('#responseContainer');
-        if (container) {
-            if (this.responses.length === 0 && !this.streamingContent) {
-                container.innerHTML = this.renderMarkdown(`Hello! How can I help you today?`);
-            } else if (this.viewMode === 'pagination') {
-                // Pagination Mode: Show only current response + streaming if applicable
-                const index = this.currentResponseIndex >= 0 ? this.currentResponseIndex : (this.responses.length > 0 ? this.responses.length - 1 : 0);
-
-                let htmlContent = '';
-
-                // Show completed response if exists at index
-                if (index < this.responses.length) {
-                    htmlContent += `
-                        <div class="response-item" data-index="${index}">
-                            ${this.renderMarkdown(this.responses[index])}
-                        </div>
-                    `;
-                }
-
-                // Append streaming content if we are at the end
-                if (this.streamingContent && index === this.responses.length - 1) {
-                    htmlContent += `
-                        <hr class="response-separator"/>
-                        <div class="response-item streaming">
-                            ${this.renderMarkdown(this.streamingContent + ' ▮')}
-                        </div>
-                    `;
-                }
-
-                container.innerHTML = htmlContent;
-
-                // Scroll to top of the new response (since it's a page switch)
-                container.scrollTop = 0;
-
-            } else {
-                // Scrolling Mode (Standard)
-                let renderedResponses = this.responses.map((response, index) => {
-                    return `
-                        <div class="response-item" data-index="${index}">
-                            ${this.renderMarkdown(response)}
-                        </div>
-                        ${index < this.responses.length - 1 ? '<hr class="response-separator"/>' : ''}
-                    `;
-                }).join('');
-
-                // Append streaming content if active
-                if (this.streamingContent) {
-                    renderedResponses += `
-                        ${this.responses.length > 0 ? '<hr class="response-separator"/>' : ''}
-                        <div class="response-item streaming">
-                            ${this.renderMarkdown(this.streamingContent + ' ▮')}
-                        </div>
-                    `;
-                }
-
-                container.innerHTML = renderedResponses;
-
-                // Scroll to bottom after update
-                setTimeout(() => {
-                    container.scrollTop = container.scrollHeight;
-                }, 0);
-            }
-        } else {
-            console.log('Response container not found');
-        }
+        // Legacy method kept for safety, but logic moved to main render()
+        // IPC or other triggers might call this, so we just requestUpdate
+        this.requestUpdate();
     }
 
     handlePaste(e) {
@@ -1292,7 +1140,34 @@ export class AssistantView extends LitElement {
                 </div>
 
                 <div class="response-container" id="responseContainer">
-                    <!-- Responses will be rendered here via updateResponseContent -->
+                    ${this.responses.length === 0 && !this.streamingContent
+                ? html`<response-item .content=${"Hello! How can I help you today?"} .index=${-1}></response-item>`
+                : ''
+            }
+
+                    ${this.viewMode === 'pagination'
+                ? html`
+                            <!-- Pagination Mode -->
+                            ${this.currentResponseIndex < this.responses.length
+                        ? html`
+                                    <response-item .content=${this.responses[this.currentResponseIndex]} .index=${this.currentResponseIndex}></response-item>
+                                    ${this.streamingContent && this.currentResponseIndex === this.responses.length - 1 ? html`<hr class="response-separator"/><response-item .content=${this.streamingContent} .isStreaming=${true}></response-item>` : ''}
+                                  `
+                        : (this.streamingContent ? html`<response-item .content=${this.streamingContent} .isStreaming=${true}></response-item>` : '')
+                    }
+                        `
+                : html`
+                            <!-- Scrolling Mode -->
+                            ${this.responses.map((response, index) => html`
+                                <response-item .content=${response} .index=${index}></response-item>
+                                ${index < this.responses.length - 1 ? html`<hr class="response-separator"/>` : ''}
+                            `)}
+                            ${this.streamingContent ? html`
+                                ${this.responses.length > 0 ? html`<hr class="response-separator"/>` : ''}
+                                <response-item .content=${this.streamingContent} .isStreaming=${true}></response-item>
+                            ` : ''}
+                        `
+            }
                 </div>
                 
                 <div class="loading-area">
@@ -1322,5 +1197,123 @@ export class AssistantView extends LitElement {
         `;
     }
 }
+
+// Helper function for language detection
+function detectLanguage(code) {
+    const patterns = {
+        'javascript': /(function|const|let|var|=>|console\.|\.js$)/i,
+        'python': /(def |import |from |print\(|\.py$)/i,
+        'java': /(public |class |import |System\.|\.java$)/i,
+        'cpp': /(#include|std::|cout|cin|\.cpp$|\.h$)/i,
+        'csharp': /(using |namespace |class |Console\.|\.cs$)/i,
+        'php': /(<\?php|echo |function |\$[a-zA-Z_])/i,
+        'ruby': /(def |puts |require |\.rb$)/i,
+        'go': /(package |import |func |fmt\.|\.go$)/i,
+        'rust': /(fn |let |mut |println!|\.rs$)/i,
+        'sql': /(SELECT|INSERT|UPDATE|DELETE|CREATE|DROP|FROM|WHERE)/i,
+        'html': /(<html|<head|<body|<div|<span|<p>)/i,
+        'css': /(\.|#|\{|margin|padding|color|background)/i,
+        'bash': /(#!\/bin|echo |ls |cd |mkdir|rm |chmod)/i
+    };
+
+    for (const [lang, pattern] of Object.entries(patterns)) {
+        if (pattern.test(code)) {
+            return lang;
+        }
+    }
+    return null;
+}
+
+// Helper function to add copy buttons
+function addCopyButtonsToCodeBlocks(html) {
+    return html.replace(
+        /<pre><code[^>]*>([\s\S]*?)<\/code><\/pre>/g,
+        (match, codeContent) => {
+            const cleanCode = codeContent
+                .replace(/&lt;/g, '<')
+                .replace(/&gt;/g, '>')
+                .replace(/&amp;/g, '&')
+                .replace(/&quot;/g, '"')
+                .replace(/&#39;/g, "'");
+
+            let highlightedCode = codeContent;
+            if (window.hljs) {
+                try {
+                    const language = detectLanguage(cleanCode);
+                    if (language) {
+                        highlightedCode = window.hljs.highlight(cleanCode, { language }).value;
+                    } else {
+                        highlightedCode = window.hljs.highlightAuto(cleanCode).value;
+                    }
+                } catch (error) {
+                    console.warn('Syntax highlighting failed:', error);
+                    highlightedCode = codeContent;
+                }
+            }
+
+            return `<pre><code class="hljs">${highlightedCode}</code><button class="copy-button" onclick="copyCode(this, \`${cleanCode.replace(/`/g, '\\`')}\`)">Copy</button></pre>`;
+        }
+    );
+}
+
+// Global renderMarkdown function
+function renderMarkdown(content) {
+    if (typeof window !== 'undefined' && window.marked) {
+        try {
+            let processedContent = content;
+            if (content.includes('*[Response Time:')) {
+                processedContent = content.replace(/\*\[Response Time: (.*?)s\]\*/g,
+                    '<div class="response-time-badge">⚡ Response Time: $1s</div>');
+            }
+
+            window.marked.setOptions({
+                breaks: true,
+                gfm: true,
+                sanitize: false,
+            });
+            let rendered = window.marked.parse(processedContent);
+            rendered = addCopyButtonsToCodeBlocks(rendered);
+            return rendered;
+        } catch (error) {
+            console.warn('Error parsing markdown:', error);
+            return content;
+        }
+    }
+    return content;
+}
+
+// Lightweight component for individual responses
+class ResponseItem extends LitElement {
+    static properties = {
+        content: { type: String },
+        index: { type: Number },
+        isStreaming: { type: Boolean }
+    };
+
+    createRenderRoot() {
+        return this; // Render to Light DOM to inherit parent styles
+    }
+
+    render() {
+        return html`
+            <div class="response-item ${this.isStreaming ? 'streaming' : ''}" data-index="${this.index}">
+                <!-- Content injected via updated() -->
+            </div>
+        `;
+    }
+
+    updated(changedProperties) {
+        if (changedProperties.has('content')) {
+            const div = this.querySelector('.response-item');
+            if (div) {
+                const markdown = renderMarkdown(this.content + (this.isStreaming ? ' ▮' : ''));
+                if (div.innerHTML !== markdown) { // Avoid unnecessary DOM writes
+                    div.innerHTML = markdown;
+                }
+            }
+        }
+    }
+}
+customElements.define('response-item', ResponseItem);
 
 customElements.define('assistant-view', AssistantView);

@@ -205,25 +205,37 @@ async function initializeOpenAISession(apiKey, customPrompt = '', resumeContext 
         // Test connectivity based on mode
         // Test connectivity based on mode
         if (process.env.GROQ_API_KEY) {
-            // Test Groq Keys (Loop through all to find first valid one)
+            // Test Groq Keys (Randomized Start for Load Balancing)
             const keys = getGroqKeys();
             let activeKeyFound = false;
 
+            // Randomize start index
+            const startIndex = Math.floor(Math.random() * keys.length);
+            console.log(`Starting Connectivity Test at Random Index: ${startIndex}`);
+
             for (let i = 0; i < keys.length; i++) {
+                const index = (startIndex + i) % keys.length; // Wrap around
                 try {
-                    console.log(`Testing Groq Key Index ${i}...`);
-                    const groq = new Groq({ apiKey: keys[i], dangerouslyAllowBrowser: true, timeout: 5000 });
+                    console.log(`Testing Groq Key Index ${index}...`);
+                    const groq = new Groq({
+                        apiKey: keys[index],
+                        dangerouslyAllowBrowser: true,
+                        timeout: 5000,
+                        maxRetries: 0
+                    });
+
                     await groq.chat.completions.create({
                         messages: [{ role: 'user', content: 'hi' }],
                         model: "llama-3.3-70b-versatile",
                         max_tokens: 1,
                     });
-                    console.log(`Groq connectivity verified with Key Index ${i}.`);
-                    currentGroqKeyIndex = i; // Set the working key as default
+
+                    console.log(`Groq connectivity verified with Key Index ${index}.`);
+                    currentGroqKeyIndex = index; // Set the working key as default
                     activeKeyFound = true;
                     break; // Stop testing once we find a working key
                 } catch (err) {
-                    console.warn(`Groq Key Index ${i} failed verification: ${err.message}`);
+                    console.warn(`Groq Key Index ${index} failed verification: ${err.message}`);
                     // Continue to next key
                 }
             }
