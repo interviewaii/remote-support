@@ -124,7 +124,7 @@ export class PaymentAlert extends LitElement {
             display: flex;
             align-items: center;
             justify-content: center;
-            cursor: pointer;
+            cursor: default;
             transition: all 0.2s ease;
             font-size: 18px;
             font-weight: bold;
@@ -377,7 +377,7 @@ export class PaymentAlert extends LitElement {
             border-radius: 6px;
             font-size: 11px;
             font-weight: 600;
-            cursor: pointer;
+            cursor: default;
             transition: all 0.2s ease;
             border: none;
             outline: none;
@@ -493,7 +493,7 @@ export class PaymentAlert extends LitElement {
             border-radius: 8px;
             font-size: 12px;
             font-weight: 600;
-            cursor: pointer;
+            cursor: default;
             transition: all 0.2s ease;
             display: inline-flex;
             align-items: center;

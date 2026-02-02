@@ -194,6 +194,7 @@ export class InterviewCrackerApp extends LitElement {
         showPaymentAlert: { type: Boolean },
         _viewInstances: { type: Object, state: true },
         _isClickThrough: { state: true },
+        isManualMode: { type: Boolean },
     };
 
     constructor() {
@@ -227,6 +228,7 @@ export class InterviewCrackerApp extends LitElement {
         this.responseCount = parseInt(localStorage.getItem('responseCount') || '0');
         this.isActivated = false; // Will be verified async
         this.showPaymentAlert = false;
+        this.isManualMode = false; // Add manual mode state
 
         // Apply layout mode to document root
         this.updateLayoutMode();
@@ -406,6 +408,10 @@ export class InterviewCrackerApp extends LitElement {
             });
             ipcRenderer.on('click-through-toggled', (_, isEnabled) => {
                 this._isClickThrough = isEnabled;
+            });
+            ipcRenderer.on('update-mode', (_, isManual) => {
+                this.isManualMode = isManual;
+                this.requestUpdate();
             });
         }
 
@@ -953,6 +959,7 @@ export class InterviewCrackerApp extends LitElement {
                         .advancedMode=${this.advancedMode}
                         .isListening=${this.isListening}
                         .isDarkMode=${this.isDarkMode}
+                        .isManualMode=${this.isManualMode}
                         .onCustomizeClick=${() => this.handleCustomizeClick()}
                         .onHelpClick=${() => this.handleHelpClick()}
                         .onHistoryClick=${() => this.handleHistoryClick()}

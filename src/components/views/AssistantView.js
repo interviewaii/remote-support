@@ -266,7 +266,7 @@ export class AssistantView extends LitElement {
             padding: 4px 8px;
             border-radius: 4px;
             font-size: 12px;
-            cursor: pointer;
+            cursor: default;
             transition: all 0.2s ease;
             opacity: 0.7;
         }
@@ -514,7 +514,7 @@ export class AssistantView extends LitElement {
             padding: 4px 8px;
             border-radius: 4px;
             font-size: 12px;
-            cursor: pointer;
+            cursor: default;
             transition: all 0.2s ease;
             opacity: 0.7;
         }
@@ -759,7 +759,7 @@ export class AssistantView extends LitElement {
             border-radius: 12px;
             font-size: 14px;
             font-weight: 500;
-            cursor: pointer;
+            cursor: default;
             transition: all 0.2s ease;
             min-width: 70px;
             display: flex;
@@ -784,7 +784,7 @@ export class AssistantView extends LitElement {
             justify-content: center;
             box-shadow: none;
             transition: background 0.2s, border 0.2s, color 0.2s, box-shadow 0.2s;
-            cursor: pointer;
+            cursor: default;
             outline: none;
         }
         .nav-button:disabled {

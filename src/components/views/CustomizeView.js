@@ -127,7 +127,7 @@ export class CustomizeView extends LitElement {
         }
 
         select.form-control {
-            cursor: pointer;
+            cursor: default;
             appearance: none;
             background-image: var(--select-arrow, url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3e%3cpath stroke='%23ffffff' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='M6 8l4 4 4-4'/%3e%3c/svg%3e"));
             background-position: right 8px center;
@@ -176,7 +176,7 @@ export class CustomizeView extends LitElement {
         }
 
         .keybind-input {
-            cursor: pointer;
+            cursor: default;
             font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Fira Code', monospace;
             text-align: center;
             letter-spacing: 0.5px;
@@ -201,7 +201,7 @@ export class CustomizeView extends LitElement {
             border-radius: 4px;
             font-size: 11px;
             font-weight: 500;
-            cursor: pointer;
+            cursor: default;
             transition: all 0.15s ease;
         }
 
@@ -306,14 +306,14 @@ export class CustomizeView extends LitElement {
             width: 14px;
             height: 14px;
             accent-color: var(--focus-border-color, #007aff);
-            cursor: pointer;
+            cursor: default;
         }
 
         .checkbox-label {
             font-weight: 500;
             font-size: 12px;
             color: var(--label-color, rgba(255, 255, 255, 0.9));
-            cursor: pointer;
+            cursor: default;
             user-select: none;
         }
 
@@ -364,7 +364,7 @@ export class CustomizeView extends LitElement {
             background: var(--input-background, rgba(0, 0, 0, 0.3));
             outline: none;
             border: 1px solid var(--input-border, rgba(255, 255, 255, 0.15));
-            cursor: pointer;
+            cursor: default;
         }
 
         .slider-input::-webkit-slider-thumb {
@@ -374,7 +374,7 @@ export class CustomizeView extends LitElement {
             height: 16px;
             border-radius: 50%;
             background: var(--focus-border-color, #007aff);
-            cursor: pointer;
+            cursor: default;
             border: 2px solid var(--text-color, white);
             box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
         }
@@ -384,7 +384,7 @@ export class CustomizeView extends LitElement {
             height: 16px;
             border-radius: 50%;
             background: var(--focus-border-color, #007aff);
-            cursor: pointer;
+            cursor: default;
             border: 2px solid var(--text-color, white);
             box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
         }
@@ -419,7 +419,7 @@ export class CustomizeView extends LitElement {
             font-weight: 600;
             font-size: 15px;
             padding: 10px 22px;
-            cursor: pointer;
+            cursor: default;
             transition: all 0.2s ease;
         }
         .tab-btn.active, .tab-btn:hover {
@@ -524,7 +524,7 @@ export class CustomizeView extends LitElement {
             font-weight: 600;
             font-size: 14px;
             padding: 7px 18px;
-            cursor: pointer;
+            cursor: default;
             transition: all 0.2s ease;
         }
         .toggle-btn.active, .toggle-btn:hover {
@@ -541,7 +541,7 @@ export class CustomizeView extends LitElement {
             font-size: 15px;
             padding: 10px 22px;
             margin-top: 18px;
-            cursor: pointer;
+            cursor: default;
             box-shadow: 0 2px 12px var(--shadow-color, rgba(0, 0, 0, 0.15)); /* Use theme variable with fallback */
             transition: background 0.2s, color 0.2s;
         }
@@ -563,7 +563,7 @@ export class CustomizeView extends LitElement {
             border: 1.5px solid var(--card-border, rgba(255, 255, 255, 0.15));
             border-radius: 12px;
             padding: 16px;
-            cursor: pointer;
+            cursor: default;
             transition: all 0.2s ease;
             position: relative;
             overflow: hidden;
@@ -1349,7 +1349,7 @@ export class CustomizeView extends LitElement {
                         <div class="card-content">
                             <div class="form-group">
                                 <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 15px;">
-                                    <label class="toggle-btn" style="cursor: pointer; display: inline-flex; align-items: center; gap: 6px; width: 100%; justify-content: center; padding: 12px;">
+                                    <label class="toggle-btn" style="cursor: default; display: inline-flex; align-items: center; gap: 6px; width: 100%; justify-content: center; padding: 12px;">
                                         <span style="font-size: 1.2em;">📂</span> Upload Resume File
                                         <input type="file" accept=".txt,.md,.json,.pdf,.doc,.docx" style="display: none" @change=${this.handleResumeUpload} />
                                     </label>

@@ -1105,7 +1105,12 @@ CRITICAL INSTRUCTIONS:
         manualTranscriptionBuffer = "";
 
         console.log(`Manual Mode Set: ${isManualMode} (Buffer Cleared)`);
-        sendToRenderer('update-status', isManualMode ? 'Manual Mode (F2 to Answer, F4 to Auto)' : 'Auto Mode');
+        try {
+            sendToRenderer('update-status', isManualMode ? 'Manual Mode (F2 to Answer, F4 to Auto)' : 'Auto Mode');
+            sendToRenderer('update-mode', isManualMode);
+        } catch (e) {
+            console.error('Failed to update renderer (ipc):', e);
+        }
         return isManualMode;
     });
 
@@ -1134,6 +1139,11 @@ module.exports = {
         isManualMode = enabled;
         manualTranscriptionBuffer = "";
         console.log(`Manual Mode Set (Direct): ${isManualMode}`);
+        try {
+            sendToRenderer('update-mode', isManualMode);
+        } catch (e) {
+            console.error('Failed to update renderer (setManualMode):', e);
+        }
         return isManualMode;
     },
 };
@@ -1150,6 +1160,15 @@ async function triggerManualAnswer() {
     // Clear buffer IMMEDIATELY to prevent double sends
     manualTranscriptionBuffer = "";
     currentTranscription += textToProcess + " "; // Add to main history
+
+    // Auto-Revert to Auto Mode after answering
+    isManualMode = false;
+    try {
+        sendToRenderer('update-status', 'Answer Triggered (Reverting to Auto Mode)');
+        sendToRenderer('update-mode', false);
+    } catch (e) {
+        console.error('Failed to update renderer (revert):', e);
+    }
 
     // Send to LLM
     await sendMessageToOpenAI(textToProcess);

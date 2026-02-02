@@ -102,7 +102,7 @@ export class MainView extends LitElement {
             align-items: center;
             gap: 6px;
             transition: all 0.2s ease;
-            cursor: pointer;
+            cursor: default;
         }
 
         .start-button:hover {
@@ -150,7 +150,7 @@ export class MainView extends LitElement {
         .link {
             color: var(--link-color);
             text-decoration: underline;
-            cursor: pointer;
+            cursor: default;
         }
 
         .shortcut-hint {
@@ -209,7 +209,7 @@ export class MainView extends LitElement {
             border-radius: 8px;
             font-size: 11px;
             font-weight: 600;
-            cursor: pointer;
+            cursor: default;
             transition: all 0.2s ease;
             display: inline-flex;
             align-items: center;

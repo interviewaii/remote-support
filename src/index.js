@@ -24,6 +24,9 @@ function createMainWindow() {
     return mainWindow;
 }
 
+// Disable hardware acceleration to prevent GPU process crashes (Fix for Black Window/Crash)
+app.disableHardwareAcceleration();
+
 app.whenReady().then(() => {
     createMainWindow();
     setupGeneralIpcHandlers(); // Register general handlers FIRST
