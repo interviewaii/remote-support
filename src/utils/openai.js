@@ -333,13 +333,19 @@ function getGroqKeys() {
     return process.env.GROQ_API_KEY.split(',').map(k => k.trim()).filter(k => k.length > 0);
 }
 
-let currentGroqKeyIndex = 0;
+let currentGroqKeyIndex = -1; // -1 indicates not yet initialized
 
 async function sendMessageToGroq(userMessage) {
     const keys = getGroqKeys();
     if (keys.length === 0) {
         console.error('GROQ_API_KEY missing');
         return;
+    }
+
+    // Initialize random start key if not set (Load Balancing for multiple users)
+    if (currentGroqKeyIndex === -1) {
+        currentGroqKeyIndex = Math.floor(Math.random() * keys.length);
+        console.log(`Initialized Groq Key Index to Random Start: ${currentGroqKeyIndex + 1}`);
     }
 
     // Prevent overlapping requests
@@ -359,7 +365,12 @@ async function sendMessageToGroq(userMessage) {
             sendToRenderer('update-status', `Thinking (Groq Key ${currentGroqKeyIndex + 1})...`);
 
             // Re-initialize Groq with current key
-            const groq = new Groq({ apiKey: currentKey, dangerouslyAllowBrowser: true, timeout: 20000 }); // 20s timeout
+            const groq = new Groq({
+                apiKey: currentKey,
+                dangerouslyAllowBrowser: true,
+                timeout: 20000,
+                maxRetries: 0 // FAIL FAST: Don't retry same key, switch to next key immediately on 429/errors
+            });
 
             // Build conversation messages (system prompt + history)
             const p = lastSessionParams?.profile || 'interview';
@@ -411,7 +422,7 @@ async function sendMessageToGroq(userMessage) {
             });
 
             const timeoutPromise = new Promise((_, reject) =>
-                setTimeout(() => reject(new Error('Groq request timed out')), 2000) // 2s timeout for fast fallback
+                setTimeout(() => reject(new Error('Groq request timed out')), 8000) // 8s timeout (Increased from 2s to prevent false failures)
             );
 
             const startTime = Date.now();
@@ -445,13 +456,13 @@ async function sendMessageToGroq(userMessage) {
             return true; // Signal success
 
         } catch (error) {
-            console.error(`Error with Groq Key ${currentGroqKeyIndex}:`, error.message);
+            console.error(`Error with Groq Key ${currentGroqKeyIndex + 1}:`, error.message);
 
             // AGGRESSIVE ROTATION: Rotate key on ANY error (Timeout, 429, 401, 500, etc.)
-            console.warn(`Key ${currentGroqKeyIndex} failed/timed out. Switching to next key...`);
+            console.warn(`Key ${currentGroqKeyIndex + 1} failed/timed out. Switching to next key...`);
             currentGroqKeyIndex = (currentGroqKeyIndex + 1) % keys.length;
             attempts++;
-            sendToRenderer('update-status', `Groq Error. Switching to Key ${currentGroqKeyIndex + 1}...`);
+            sendToRenderer('update-status', `Groq Key ${attempts} Failed (${error.message}). Switching...`);
             // Continue loop to try next key immediately
             continue;
         }
