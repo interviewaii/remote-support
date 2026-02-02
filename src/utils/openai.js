@@ -41,6 +41,8 @@ let partialTranscriptionTimer = null; // Timer for intermediate feedback
 let speechStartTime = null; // Track when current speech segment started
 let lastPartialResults = ""; // Avoid flickering if transcription doesn't change
 let screenshotResponseStyle = 'code_only'; // Default style
+let isManualMode = false; // Manual Mode Toggle
+let manualTranscriptionBuffer = ""; // Buffer for manual mode
 
 function sendToRenderer(channel, data) {
     const windows = BrowserWindow.getAllWindows();
@@ -797,6 +799,15 @@ function setupOpenAIIpcHandlers(sessionRef) {
             const lowerText = text.toLowerCase().replace(/[.,!?;]$/, "");
             const wordCount = text.split(/\s+/).length;
 
+            // MANUAL MODE LOGIC
+            if (isManualMode) {
+                console.log(`[Manual Mode] Buffering: "${text}"`);
+                manualTranscriptionBuffer += text + " ";
+                // Update UI with partial progress so user knows it's hearing them
+                sendToRenderer('update-transcription-partial', manualTranscriptionBuffer);
+                return; // STOP HERE. Do not send to OpenAI/Groq yet.
+            }
+
             // 1. Strict Hallucination Filter (Common Whisper artifacts on noise)
             const hallucinations = /^(you|thanks?|thank you|bye|goodbye|you\.|thanks\.|subs? by|subtitle|thank you for watching|please subscribe|unintelligible|\[music\]|\[audio\]|\[silence\]|silence|amara\.org|subtitles by|copyright|all rights reserved|next|previous|select|start|stop|end|loading|buffering|transcript|transcription)$/i;
 
@@ -847,7 +858,7 @@ function setupOpenAIIpcHandlers(sessionRef) {
         }
     }
 
-    ipcMain.handle('send-image-content', async (event, { data, prompt, debug }) => {
+    ipcMain.handle('send-image-content', async (event, { data, prompt, debug, imageQuality }) => {
         if (!openaiClient) {
             return { success: false, error: 'No active session' };
         }
@@ -887,15 +898,20 @@ function setupOpenAIIpcHandlers(sessionRef) {
             const analysisPrompt = prompt || `Analyze this screenshot. ${stylePrompt}`;
             console.log(`Processing image with Style: ${screenshotResponseStyle}, Quality: ${imageQuality || 'medium'}`);
 
-            // MODEL SELECTION: 'high' quality uses gpt-4o (Smarter), others use gpt-4o-mini (Faster/Cheaper)
+            // MODEL SELECTION: Use env var if set, otherwise fallback to quality-based selection
             const isHighQuality = imageQuality === 'high';
-            const visionModel = isHighQuality ? 'gpt-4o' : 'gpt-4o-mini';
-            const visionDetail = isHighQuality ? 'high' : 'low'; // High detail sees small text/code better
+            const visionModel = process.env.OPENAI_MODEL_VISION || (isHighQuality ? 'gpt-4o' : 'gpt-4o-mini');
+            const visionDetail = isHighQuality ? 'high' : 'low'; // Keep detail high for better OCR even on mini
 
-            // Add Exam Instructions for High Quality
+            // Add Exam Instructions for High Quality or Code-focused styles
             let finalPrompt = analysisPrompt;
-            if (isHighQuality) {
-                finalPrompt += " CRITICAL: Ensure code passes ALL hidden test cases (Edge cases: null, empty, bounds, negative numbers). Optimize for O(time).";
+            if (isHighQuality || screenshotResponseStyle === 'code_only' || screenshotResponseStyle === 'approach_solution') {
+                finalPrompt += `
+CRITICAL INSTRUCTIONS:
+1. Solve for ALL edge cases (null, empty inputs, negative numbers, max/min bounds).
+2. Optimize for best Time and Space Complexity (Big O).
+3. If this is a LeetCode/HackerRank problem, provide the EXACT solution code that passes all hidden tests.
+4. Do not output markdown code blocks inside other blocks. Keep it clean.`;
             }
 
             const response = await openaiClient.chat.completions.create({
@@ -942,6 +958,7 @@ function setupOpenAIIpcHandlers(sessionRef) {
             return { success: true };
         } catch (error) {
             console.error('Error processing image:', error);
+            sendToRenderer('update-status', 'Error: ' + error.message);
             return { success: false, error: error.message };
         }
     });
@@ -1081,6 +1098,22 @@ function setupOpenAIIpcHandlers(sessionRef) {
         }
         return false;
     });
+
+    ipcMain.handle('set-manual-mode', (event, enabled) => {
+        isManualMode = enabled;
+        // ALWAYS Clear buffer on state change (or reset)
+        manualTranscriptionBuffer = "";
+
+        console.log(`Manual Mode Set: ${isManualMode} (Buffer Cleared)`);
+        sendToRenderer('update-status', isManualMode ? 'Manual Mode (F2 to Answer, F4 to Auto)' : 'Auto Mode');
+        return isManualMode;
+    });
+
+    ipcMain.handle('trigger-manual-answer', async () => {
+        console.log('Manual Trigger Activated via IPC!');
+        await triggerManualAnswer();
+        return true;
+    });
 }
 
 module.exports = {
@@ -1096,4 +1129,28 @@ module.exports = {
     setupOpenAIIpcHandlers,
     sendMessageToOpenAI,
     transcribeAudioWithWhisper,
+    triggerManualAnswer,
+    setManualMode: (enabled) => {
+        isManualMode = enabled;
+        manualTranscriptionBuffer = "";
+        console.log(`Manual Mode Set (Direct): ${isManualMode}`);
+        return isManualMode;
+    },
 };
+
+async function triggerManualAnswer() {
+    if (!manualTranscriptionBuffer || manualTranscriptionBuffer.trim().length === 0) {
+        console.log('Manual Trigger: Buffer is empty, ignoring.');
+        return;
+    }
+
+    console.log('Triggering Manual Answer with buffer:', manualTranscriptionBuffer);
+    const textToProcess = manualTranscriptionBuffer.trim();
+
+    // Clear buffer IMMEDIATELY to prevent double sends
+    manualTranscriptionBuffer = "";
+    currentTranscription += textToProcess + " "; // Add to main history
+
+    // Send to LLM
+    await sendMessageToOpenAI(textToProcess);
+}

@@ -404,127 +404,163 @@ function setupWindowsAudioProcessing(systemStream, micStream) {
 
 async function captureScreenshot(imageQuality = 'medium', isManual = false, prompt = null) {
     console.log(`Capturing ${isManual ? 'manual' : 'automated'} screenshot...`);
-    if (!mediaStream) return;
 
-    // Check rate limiting for automated screenshots only
-    if (!isManual && tokenTracker.shouldThrottle()) {
-        console.log('⚠️ Automated screenshot skipped due to rate limiting');
-        return;
-    }
-
-    // Lazy init of video element
-    if (!hiddenVideo) {
-        hiddenVideo = document.createElement('video');
-        hiddenVideo.srcObject = mediaStream;
-        hiddenVideo.muted = true;
-        hiddenVideo.playsInline = true;
-        await hiddenVideo.play();
-
-        await new Promise(resolve => {
-            if (hiddenVideo.readyState >= 2) return resolve();
-            hiddenVideo.onloadedmetadata = () => resolve();
-        });
-
-        // Lazy init of canvas based on video dimensions
-        offscreenCanvas = document.createElement('canvas');
-        offscreenCanvas.width = hiddenVideo.videoWidth;
-        offscreenCanvas.height = hiddenVideo.videoHeight;
-        offscreenContext = offscreenCanvas.getContext('2d');
-    }
-
-    // Check if video is ready
-    if (hiddenVideo.readyState < 2) {
-        console.warn('Video not ready yet, skipping screenshot');
-        return;
-    }
-
-    offscreenContext.drawImage(hiddenVideo, 0, 0, offscreenCanvas.width, offscreenCanvas.height);
-
-    // Check if image was drawn properly by sampling a pixel
-    const imageData = offscreenContext.getImageData(0, 0, 1, 1);
-    const isBlank = imageData.data.every((value, index) => {
-        // Check if all pixels are black (0,0,0) or transparent
-        return index === 3 ? true : value === 0;
-    });
-
-    if (isBlank) {
-        console.warn('Screenshot appears to be blank/black');
-        if (isManual) {
-            alert('Screen capture failed (blank image). Please check your screen sharing permissions or try restarting the app.');
-            // Hide loading indicator
-            if (window.setScreenshotProcessing) {
-                window.setScreenshotProcessing(false);
-            }
-            if (window.interviewCracker && window.interviewCracker.setStatus) {
-                window.interviewCracker.setStatus('Error: Blank screenshot');
-            }
-            return;
-        }
-    }
-
-    let qualityValue;
-    switch (imageQuality) {
-        case 'high':
-            qualityValue = 0.9;
-            break;
-        case 'medium':
-            qualityValue = 0.7;
-            break;
-        case 'low':
-            qualityValue = 0.5;
-            break;
-        default:
-            qualityValue = 0.7; // Default to medium
-    }
-
-    offscreenCanvas.toBlob(
-        async blob => {
-            if (!blob) {
-                console.error('Failed to create blob from canvas');
+    return new Promise(async (resolve, reject) => {
+        try {
+            if (!mediaStream) {
+                console.warn('No media stream available for screenshot');
+                resolve({ success: false, error: 'No media stream' });
                 return;
             }
 
-            const reader = new FileReader();
-            reader.onloadend = async () => {
-                const base64data = reader.result.split(',')[1];
+            // Check rate limiting for automated screenshots only
+            if (!isManual && tokenTracker.shouldThrottle()) {
+                console.log('⚠️ Automated screenshot skipped due to rate limiting');
+                resolve({ success: false, skipped: true });
+                return;
+            }
 
-                // Validate base64 data
-                if (!base64data || base64data.length < 100) {
-                    console.error('Invalid base64 data generated');
-                    return;
-                }
+            // Lazy init of video element
+            if (!hiddenVideo) {
+                hiddenVideo = document.createElement('video');
+                hiddenVideo.srcObject = mediaStream;
+                hiddenVideo.muted = true;
+                hiddenVideo.playsInline = true;
+                await hiddenVideo.play().catch(e => console.error('Error playing hidden video:', e));
 
-                // Optimization: Skip if image hasn't changed
-                if (!isManual && window.lastSentImage === base64data) {
-                    // console.log('Skipping duplicate frame');
-                    return;
-                }
-                window.lastSentImage = base64data;
-
-                const result = await ipcRenderer.invoke('send-image-content', {
-                    data: base64data,
-                    prompt: prompt,
+                // Wait for video to be ready
+                await new Promise(r => {
+                    if (hiddenVideo.readyState >= 2) return r();
+                    hiddenVideo.onloadedmetadata = () => r();
+                    // Timeout fallback
+                    setTimeout(r, 2000);
                 });
 
-                if (result.success) {
-                    // Track image tokens after successful send
-                    const imageTokens = tokenTracker.calculateImageTokens(offscreenCanvas.width, offscreenCanvas.height);
-                    tokenTracker.addTokens(imageTokens, 'image');
-                    console.log(`📊 Image sent successfully - ${imageTokens} tokens used (${offscreenCanvas.width}x${offscreenCanvas.height})`);
-                } else {
-                    console.error('Failed to send image:', result.error);
-                }
+                // Lazy init of canvas based on video dimensions
+                offscreenCanvas = document.createElement('canvas');
+                offscreenCanvas.width = hiddenVideo.videoWidth || 1920;
+                offscreenCanvas.height = hiddenVideo.videoHeight || 1080;
+                offscreenContext = offscreenCanvas.getContext('2d');
+            }
 
-                // Explicitly hide loading indicator when manual screenshot is done
-                if (isManual && window.setScreenshotProcessing) {
-                    window.setScreenshotProcessing(false);
+            // Check if video is ready
+            if (!hiddenVideo || hiddenVideo.readyState < 2) {
+                console.warn('Video not ready yet, skipping screenshot');
+                resolve({ success: false, error: 'Video not ready' });
+                return;
+            }
+
+            // Draw to canvas
+            if (offscreenContext && hiddenVideo) {
+                offscreenContext.drawImage(hiddenVideo, 0, 0, offscreenCanvas.width, offscreenCanvas.height);
+            } else {
+                resolve({ success: false, error: 'Context or video missing' });
+                return;
+            }
+
+            // Check if image was drawn properly by sampling a pixel
+            const imageData = offscreenContext.getImageData(0, 0, 1, 1);
+            const isBlank = imageData.data.every((value, index) => {
+                // Check if all pixels are black (0,0,0) or transparent
+                return index === 3 ? true : value === 0;
+            });
+
+            if (isBlank) {
+                console.warn('Screenshot appears to be blank/black');
+                if (isManual) {
+                    alert('Screen capture failed (blank image). Please check your screen sharing permissions or try restarting the app.');
+                    // Status update is handled by caller now
+                    if (window.interviewCracker && window.interviewCracker.setStatus) {
+                        window.interviewCracker.setStatus('Error: Blank screenshot');
+                    }
                 }
-            };
-            reader.readAsDataURL(blob);
-        },
-        'image/jpeg',
-        qualityValue
-    );
+                resolve({ success: false, error: 'Blank image' });
+                return;
+            }
+
+            let qualityValue;
+            switch (imageQuality) {
+                case 'high': qualityValue = 0.9; break;
+                case 'medium': qualityValue = 0.7; break;
+                case 'low': qualityValue = 0.5; break;
+                default: qualityValue = 0.7;
+            }
+
+            // Execute toBlob logic
+            offscreenCanvas.toBlob(
+                async blob => {
+                    if (!blob) {
+                        console.error('Failed to create blob from canvas');
+                        resolve({ success: false, error: 'Canvas blob creation failed' });
+                        return;
+                    }
+
+                    const reader = new FileReader();
+                    reader.onloadend = async () => {
+                        const base64data = reader.result.split(',')[1];
+
+                        // Validate base64 data
+                        if (!base64data || base64data.length < 100) {
+                            console.error('Invalid base64 data generated');
+                            resolve({ success: false, error: 'Invalid base64 data' });
+                            return;
+                        }
+
+                        // Optimization: Skip if image hasn't changed
+                        if (!isManual && window.lastSentImage === base64data) {
+                            resolve({ success: true, skipped: true });
+                            return;
+                        }
+                        window.lastSentImage = base64data;
+
+                        try {
+                            const result = await ipcRenderer.invoke('send-image-content', {
+                                data: base64data,
+                                prompt: prompt,
+                                imageQuality: imageQuality,
+                            });
+
+                            if (result.success) {
+                                // Track image tokens after successful send
+                                const imageTokens = tokenTracker.calculateImageTokens(offscreenCanvas.width, offscreenCanvas.height);
+                                tokenTracker.addTokens(imageTokens, 'image');
+                                console.log(`📊 Image sent successfully - ${imageTokens} tokens used (${offscreenCanvas.width}x${offscreenCanvas.height})`);
+                            } else {
+                                console.error('Failed to send image:', result.error);
+                                // ALERT USER OF ERROR
+                                if (window.interviewCracker && window.interviewCracker.setStatus) {
+                                    window.interviewCracker.setStatus('Error: ' + result.error);
+                                }
+                                if (isManual) {
+                                    alert('Screenshot Failed: ' + result.error);
+                                }
+                            }
+
+                            // Resolve the main promise with the result
+                            resolve(result);
+
+                        } catch (err) {
+                            console.error('IPC error in screenshot:', err);
+                            resolve({ success: false, error: err.message });
+                        }
+                    };
+
+                    reader.onerror = () => {
+                        console.error('FileReader error');
+                        resolve({ success: false, error: 'FileReader failed' });
+                    };
+
+                    reader.readAsDataURL(blob);
+                },
+                'image/jpeg',
+                qualityValue
+            );
+
+        } catch (err) {
+            console.error('Unexpected error in captureScreenshot:', err);
+            resolve({ success: false, error: err.message });
+        }
+    }); // End Promise
 }
 
 async function captureManualScreenshot(imageQuality = null) {
@@ -587,11 +623,25 @@ async function captureManualScreenshot(imageQuality = null) {
 "React is a library for building UIs... it uses a Virtual DOM to improve performance..."`;
     }
 
-    await captureScreenshot(quality, true, analysisPrompt); // Pass true for isManual and the prompt
+    try {
+        await captureScreenshot(quality, true, analysisPrompt); // Pass true for isManual and the prompt
 
-    // Update status to show AI processing
-    if (window.interviewCracker && window.interviewCracker.setStatus) {
-        window.interviewCracker.setStatus('AI analyzing screenshot for questions...');
+        // Update status to show AI processing (if successful and not already errored)
+        if (window.interviewCracker && window.interviewCracker.setStatus) {
+            // Note: captureScreenshot generally logs errors, but here we can just set a generic status
+            // If it failed, the alert would have shown.
+            window.interviewCracker.setStatus('AI analysis processing...');
+        }
+    } catch (error) {
+        console.error('Manual screenshot failed:', error);
+        if (window.interviewCracker && window.interviewCracker.setStatus) {
+            window.interviewCracker.setStatus('Error: ' + (error.message || 'Unknown error'));
+        }
+    } finally {
+        // ALWAYS hide loading indicator, no matter what happens
+        if (window.setScreenshotProcessing) {
+            window.setScreenshotProcessing(false);
+        }
     }
 }
 

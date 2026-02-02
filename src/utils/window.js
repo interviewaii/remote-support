@@ -191,7 +191,12 @@ function getDefaultKeybinds() {
         previousResponse: isMac ? 'Cmd+[' : 'Ctrl+[',
         nextResponse: isMac ? 'Cmd+]' : 'Ctrl+]',
         scrollUp: isMac ? 'Cmd+Shift+Up' : 'Ctrl+Shift+Up',
+        scrollUp: isMac ? 'Cmd+Shift+Up' : 'Ctrl+Shift+Up',
         scrollDown: isMac ? 'Cmd+Shift+Down' : 'Ctrl+Shift+Down',
+        scrollDown: isMac ? 'Cmd+Shift+Down' : 'Ctrl+Shift+Down',
+        triggerAnswer: 'F2',
+        enableManualMode: 'F3',
+        enableAutoMode: 'F4',
     };
 }
 
@@ -413,6 +418,69 @@ function updateGlobalShortcuts(keybinds, mainWindow, sendToRenderer, geminiSessi
             }
         } catch (error) {
             console.error(`Failed to register scrollDown (${keybinds.scrollDown}):`, error);
+        }
+    }
+
+    // Register Trigger Answer Shortcut (F2)
+    if (keybinds.triggerAnswer) {
+        try {
+            const ret = globalShortcut.register(keybinds.triggerAnswer, () => {
+                console.log('Trigger Answer shortcut triggered (F2)');
+                if (geminiSessionRef && typeof geminiSessionRef.triggerManualAnswer === 'function') {
+                    geminiSessionRef.triggerManualAnswer();
+                } else {
+                    console.error('Trigger Manual Answer function not available in sessionRef');
+                }
+            });
+            if (ret) {
+                console.log(`Registered triggerAnswer: ${keybinds.triggerAnswer}`);
+            } else {
+                console.error(`FAILED to register triggerAnswer: ${keybinds.triggerAnswer}`);
+            }
+        } catch (error) {
+            console.error(`Failed to register triggerAnswer (${keybinds.triggerAnswer}):`, error);
+        }
+    }
+
+    // Register Enable Manual Mode Shortcut (F3)
+    if (keybinds.enableManualMode) {
+        try {
+            const ret = globalShortcut.register(keybinds.enableManualMode, () => {
+                console.log('Enable Manual Mode shortcut triggered (F3)');
+                if (geminiSessionRef && typeof geminiSessionRef.setManualMode === 'function') {
+                    geminiSessionRef.setManualMode(true);
+                } else {
+                    console.error('setManualMode function not available in sessionRef');
+                }
+            });
+            if (ret) {
+                console.log(`Registered enableManualMode: ${keybinds.enableManualMode}`);
+            } else {
+                console.error(`FAILED to register enableManualMode: ${keybinds.enableManualMode}`);
+            }
+        } catch (error) {
+            console.error(`Failed to register enableManualMode (${keybinds.enableManualMode}):`, error);
+        }
+    }
+
+    // Register Enable Auto Mode Shortcut (F4)
+    if (keybinds.enableAutoMode) {
+        try {
+            const ret = globalShortcut.register(keybinds.enableAutoMode, () => {
+                console.log('Enable Auto Mode shortcut triggered (F4)');
+                if (geminiSessionRef && typeof geminiSessionRef.setManualMode === 'function') {
+                    geminiSessionRef.setManualMode(false);
+                } else {
+                    console.error('setManualMode function not available in sessionRef');
+                }
+            });
+            if (ret) {
+                console.log(`Registered enableAutoMode: ${keybinds.enableAutoMode}`);
+            } else {
+                console.error(`FAILED to register enableAutoMode: ${keybinds.enableAutoMode}`);
+            }
+        } catch (error) {
+            console.error(`Failed to register enableAutoMode (${keybinds.enableAutoMode}):`, error);
         }
     }
 

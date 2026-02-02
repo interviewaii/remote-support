@@ -10,9 +10,13 @@ const envPath = app.isPackaged
     : path.join(__dirname, '../.env');
 require('dotenv').config({ path: envPath });
 const { createWindow, updateGlobalShortcuts } = require('./utils/window');
-const { setupOpenAIIpcHandlers, stopMacOSAudioCapture, sendToRenderer } = require('./utils/openai');
+const { setupOpenAIIpcHandlers, stopMacOSAudioCapture, sendToRenderer, triggerManualAnswer, setManualMode } = require('./utils/openai');
 
-const openaiSessionRef = { current: null };
+const openaiSessionRef = {
+    current: null,
+    triggerManualAnswer: triggerManualAnswer,
+    setManualMode: setManualMode
+};
 let mainWindow = null;
 
 function createMainWindow() {
