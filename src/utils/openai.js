@@ -4,6 +4,7 @@ const { BrowserWindow, ipcMain } = require('electron');
 const { spawn } = require('child_process');
 const { saveDebugAudio } = require('../audioUtils');
 const { getSystemPrompt } = require('./prompts');
+const { performOCR } = require('./ocr');
 const fs = require('fs');
 const pdf = require('pdf-parse');
 const mammoth = require('mammoth');
@@ -882,8 +883,8 @@ function setupOpenAIIpcHandlers(sessionRef) {
     }
 
     ipcMain.handle('send-image-content', async (event, { data, prompt, debug, imageQuality }) => {
-        if (!openaiClient) {
-            return { success: false, error: 'No active session' };
+        if (!openaiClient && !process.env.GROQ_API_KEY) {
+            return { success: false, error: 'No active session (OpenAI or Groq)' };
         }
 
         try {
@@ -920,6 +921,50 @@ function setupOpenAIIpcHandlers(sessionRef) {
 
             const analysisPrompt = prompt || `Analyze this screenshot. ${stylePrompt}`;
             console.log(`Processing image with Style: ${screenshotResponseStyle}, Quality: ${imageQuality || 'medium'}`);
+
+            // OCR INTEGRATION START
+            const ocrEnabled = await getStoredSetting('ocr_enabled', 'true') === 'true'; // Default to true
+
+            if (ocrEnabled) {
+                let extractedText = null;
+                let usedMethod = '';
+
+                // 1. Try Local OCR (Tesseract) - Priority: Free, Offline
+                console.log('Attempting Phase 1: Local OCR (Tesseract)...');
+                sendToRenderer('update-status', 'Extracting Text (Local)...');
+                const { performLocalOCR } = require('./localOcr'); // Lazy load
+                extractedText = await performLocalOCR(data);
+
+                if (extractedText && extractedText.length > 10) {
+                    usedMethod = 'Local OCR';
+                }
+                else {
+                    // 2. Try Cloud OCR (OCR.space) - Priority: Better Accuracy, Free Tier
+                    console.log('Local OCR failed/empty. Attempting Phase 2: Cloud OCR...');
+                    sendToRenderer('update-status', 'Extracting Text (Cloud)...');
+                    const { performOCR } = require('./ocr'); // Lazy load
+                    extractedText = await performOCR(data);
+                    if (extractedText && extractedText.length > 10) {
+                        usedMethod = 'Cloud OCR';
+                    }
+                }
+
+                if (extractedText && extractedText.length > 10) {
+                    // OCR SUCCESS - Use Text Model (Groq/OpenAI)
+                    const finalPrompt = `${analysisPrompt}\n\n[CONTEXT: The following text was extracted from the user's screenshot using ${usedMethod}]:\n"""\n${extractedText}\n"""\n\nAnalyze this text as if it were the screenshot content.`;
+
+                    console.log(`${usedMethod} Success. Routing to Text Chat Engine...`);
+
+                    // Send to chat engine (supports Groq routing)
+                    await sendMessageToOpenAI(finalPrompt);
+
+                    return { success: true };
+                } else {
+                    console.log('All OCR methods failed or returned empty text. Falling back to Vision Model.');
+                    sendToRenderer('update-status', 'OCR Failed. Using Vision Model...');
+                }
+            }
+            // OCR INTEGRATION END
 
             // MODEL SELECTION: Use env var if set, otherwise fallback to quality-based selection
             const isHighQuality = imageQuality === 'high';
