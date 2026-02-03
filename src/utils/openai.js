@@ -8,6 +8,7 @@ const { performOCR } = require('./ocr');
 const fs = require('fs');
 const pdf = require('pdf-parse');
 const mammoth = require('mammoth');
+const { selectModel } = require('./modelRouter');
 
 // Conversation tracking variables
 let currentSessionId = null;
@@ -392,6 +393,10 @@ async function sendMessageToGroq(userMessage) {
     if (currentGroqKeyIndex === -1) {
         currentGroqKeyIndex = Math.floor(Math.random() * keys.length);
         console.log(`Initialized Groq Key Index to Random Start: ${currentGroqKeyIndex + 1}`);
+    } else {
+        // Round Robin: Rotate to next key for every new request to distribute load evenly
+        currentGroqKeyIndex = (currentGroqKeyIndex + 1) % keys.length;
+        console.log(`Rotated to next Groq Key Index: ${currentGroqKeyIndex + 1}`);
     }
 
     // Prevent overlapping requests
@@ -456,10 +461,14 @@ async function sendMessageToGroq(userMessage) {
 
             messageBuffer = '';
 
+            // Dynamic Model Selection
+            const selectedModel = selectModel(userMessage);
+            console.log(`[Groq] Selected Model: ${selectedModel} for input length: ${userMessage ? userMessage.length : 0}`);
+
             // Add explicit timeout race
             const completionPromise = groq.chat.completions.create({
                 messages: messages,
-                model: "llama-3.3-70b-versatile",
+                model: selectedModel,
                 temperature: 0.2, // LOW TEMP for High Precision (No Hallucinations)
                 max_tokens: 2048,
                 top_p: 1,
