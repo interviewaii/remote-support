@@ -274,17 +274,17 @@ async function initializeOpenAISession(apiKey, customPrompt = '', resumeContext 
 }
 
 async function transcribeAudioWithWhisper(audioBuffer) {
-    if (!openaiClient || isTranscribing) return '';
+    // Check if we have functionality to transcribe (Either OpenAI or Groq)
+    if (!openaiClient && !process.env.GROQ_API_KEY) return '';
+    if (isTranscribing) return '';
 
     try {
         isTranscribing = true;
 
         // Convert audio buffer to a format Whisper can accept
-        // Note: Whisper expects audio files, so we'll need to save temporarily
         const fs = require('fs');
         const path = require('path');
         const os = require('os');
-
         const tempFile = path.join(os.tmpdir(), `audio_${Date.now()}.wav`);
 
         // Create WAV file from PCM data
@@ -292,23 +292,56 @@ async function transcribeAudioWithWhisper(audioBuffer) {
         const wavBuffer = Buffer.concat([wavHeader, audioBuffer]);
         fs.writeFileSync(tempFile, wavBuffer);
 
-        // Transcribe with Whisper
-        const transcription = await openaiClient.audio.transcriptions.create({
-            file: fs.createReadStream(tempFile),
-            model: 'whisper-1',
-            language: 'en',
-            // Prompt helps Whisper recognize technical terms better
-            prompt: 'Programming interview: Java, Python, JavaScript, React, database, SQL, API, algorithm, data structure, object-oriented, frontend, backend, microservices, Docker, Kubernetes',
-        });
+        let transcriptionText = '';
+
+        // 1. Try GROQ Whisper (Free, Fast) - Priority 1
+        if (process.env.GROQ_API_KEY) {
+            try {
+                // Get a random key for load balancing
+                const keys = getGroqKeys();
+                const randomKey = keys[Math.floor(Math.random() * keys.length)];
+
+                // console.log(`Transcribing with Groq (distil-whisper)... Key: ${randomKey.substring(0, 10)}...`);
+
+                const groq = new Groq({ apiKey: randomKey, dangerouslyAllowBrowser: true });
+
+                const transcription = await groq.audio.transcriptions.create({
+                    file: fs.createReadStream(tempFile),
+                    model: 'distil-whisper-large-v3-en', // The Free Model
+                    language: 'en',
+                    response_format: 'json',
+                    temperature: 0.0,
+                    prompt: 'Programming interview: Java, Python, JavaScript, React, database, SQL, API, algorithm, data structure, object-oriented, frontend, backend, microservices, Docker, Kubernetes',
+                });
+
+                transcriptionText = transcription.text;
+                console.log('Groq Transcription Success:', transcriptionText);
+            } catch (groqError) {
+                console.error('Groq Whisper failed:', groqError.message);
+                // Fallthrough to OpenAI if available
+            }
+        }
+
+        // 2. Try OpenAI Whisper (Paid) - Priority 2 (Fallback)
+        if (!transcriptionText && openaiClient) {
+            console.log('Falling back to OpenAI Whisper...');
+            const transcription = await openaiClient.audio.transcriptions.create({
+                file: fs.createReadStream(tempFile),
+                model: 'whisper-1',
+                language: 'en',
+                prompt: 'Programming interview: Java, Python, JavaScript, React, database, SQL, API, algorithm, data structure, object-oriented, frontend, backend, microservices, Docker, Kubernetes',
+            });
+            transcriptionText = transcription.text;
+        }
 
         // Clean up temp file
-        fs.unlinkSync(tempFile);
+        try { fs.unlinkSync(tempFile); } catch (e) { }
 
         isTranscribing = false;
-        return transcription.text || '';
+        return transcriptionText || '';
 
     } catch (error) {
-        console.error('Error transcribing audio with Whisper:', error);
+        console.error('Error transcribing audio:', error);
         isTranscribing = false;
         return '';
     }
