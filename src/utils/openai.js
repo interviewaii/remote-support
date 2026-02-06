@@ -191,7 +191,7 @@ async function initializeOpenAISession(apiKey, customPrompt = '', resumeContext 
         }
 
         // Initialize Groq if key is present (preferred for Chat)
-        if (process.env.GROQ_API_KEY) {
+        if (process.env.GROQ_API_KEY || process.env.GROQ_KEYS_70B || process.env.GROQ_KEYS_8B) {
             console.log('Groq initialized for Hybrid Chat mode.');
         }
 
@@ -206,7 +206,7 @@ async function initializeOpenAISession(apiKey, customPrompt = '', resumeContext 
 
         // Test connectivity based on mode
         // Test connectivity based on mode
-        if (process.env.GROQ_API_KEY) {
+        if (process.env.GROQ_API_KEY || process.env.GROQ_KEYS_70B || process.env.GROQ_KEYS_8B) {
             // Test Groq Keys (Randomized Start for Load Balancing)
             const keys = getGroqKeys();
             let activeKeyFound = false;
@@ -259,7 +259,7 @@ async function initializeOpenAISession(apiKey, customPrompt = '', resumeContext 
             throw new Error('Neither Groq nor OpenAI API keys are configured.');
         }
 
-        sendToRenderer('update-status', process.env.GROQ_API_KEY ? 'Session connected (Groq)' : 'Session connected');
+        sendToRenderer('update-status', (process.env.GROQ_API_KEY || process.env.GROQ_KEYS_70B || process.env.GROQ_KEYS_8B) ? 'Session connected (Groq)' : 'Session connected');
 
         isInitializingSession = false;
         sendToRenderer('session-initializing', false);
@@ -276,7 +276,7 @@ async function initializeOpenAISession(apiKey, customPrompt = '', resumeContext 
 
 async function transcribeAudioWithWhisper(audioBuffer) {
     // Check if we have functionality to transcribe (Either OpenAI or Groq)
-    if (!openaiClient && !process.env.GROQ_API_KEY) return '';
+    if (!openaiClient && !process.env.GROQ_API_KEY && !process.env.GROQ_KEYS_70B && !process.env.GROQ_KEYS_8B) return '';
     if (isTranscribing) return '';
 
     try {
@@ -296,7 +296,7 @@ async function transcribeAudioWithWhisper(audioBuffer) {
         let transcriptionText = '';
 
         // 1. Try GROQ Whisper (Free, Fast) - Priority 1
-        if (process.env.GROQ_API_KEY) {
+        if (process.env.GROQ_API_KEY || process.env.GROQ_KEYS_70B || process.env.GROQ_KEYS_8B) {
             try {
                 // Get a random key for load balancing
                 const keys = getGroqKeys();
@@ -308,7 +308,7 @@ async function transcribeAudioWithWhisper(audioBuffer) {
 
                 const transcription = await groq.audio.transcriptions.create({
                     file: fs.createReadStream(tempFile),
-                    model: 'distil-whisper-large-v3-en', // The Free Model
+                    model: 'whisper-large-v3-turbo', // The Fast & Efficient Turbo Model
                     language: 'en',
                     response_format: 'json',
                     temperature: 0.0,
@@ -374,30 +374,64 @@ function createWavHeader(dataLength, sampleRate, channels, bitsPerSample) {
 }
 
 
-// Helper to get available Groq keys
-function getGroqKeys() {
-    if (!process.env.GROQ_API_KEY) return [];
-    return process.env.GROQ_API_KEY.split(',').map(k => k.trim()).filter(k => k.length > 0);
+// Helper to get available Groq keys based on model
+function getGroqKeys(modelId = '') {
+    let specificKeys = '';
+
+    // Priority 1: Model-specific buckets
+    if (modelId.includes('70b') && process.env.GROQ_KEYS_70B) {
+        specificKeys = process.env.GROQ_KEYS_70B;
+        // console.log('[Keys] Using 70B Bucket');
+    } else if (modelId.includes('8b') && process.env.GROQ_KEYS_8B) {
+        specificKeys = process.env.GROQ_KEYS_8B;
+        // console.log('[Keys] Using 8B Bucket');
+    }
+
+    // Return specific keys if found
+    if (specificKeys) {
+        return specificKeys.split(',').map(k => k.trim()).filter(k => k.length > 0);
+    }
+
+    // Priority 2: General Fallback
+    // Priority 2: General Fallback (if specific keys not found or no model specified)
+    // If GROQ_API_KEY is missing, try to fallback to 8B or 70B keys (generic usage)
+    const fallbackKeys = process.env.GROQ_API_KEY || process.env.GROQ_KEYS_8B || process.env.GROQ_KEYS_70B;
+
+    if (!fallbackKeys) return [];
+    return fallbackKeys.split(',').map(k => k.trim()).filter(k => k.length > 0);
 }
 
-let currentGroqKeyIndex = -1; // -1 indicates not yet initialized
+// Track key indices per bucket to ensure smooth rotation
+const keyRotations = {
+    general: 0,
+    bucket70b: 0,
+    bucket8b: 0
+};
 
 async function sendMessageToGroq(userMessage) {
-    const keys = getGroqKeys();
+    // 1. Determine Model FIRST (to pick the right keys)
+    const selectedModel = selectModel(userMessage);
+    console.log(`[Groq] Target Model: ${selectedModel} (Input len: ${userMessage ? userMessage.length : 0})`);
+
+    // 2. Get Keys for that model
+    const keys = getGroqKeys(selectedModel);
+
     if (keys.length === 0) {
-        console.error('GROQ_API_KEY missing');
-        return;
+        console.error('GROQ_API_KEY missing (and no model-specific keys found)');
+        return false;
     }
 
-    // Initialize random start key if not set (Load Balancing for multiple users)
-    if (currentGroqKeyIndex === -1) {
-        currentGroqKeyIndex = Math.floor(Math.random() * keys.length);
-        console.log(`Initialized Groq Key Index to Random Start: ${currentGroqKeyIndex + 1}`);
-    } else {
-        // Round Robin: Rotate to next key for every new request to distribute load evenly
-        currentGroqKeyIndex = (currentGroqKeyIndex + 1) % keys.length;
-        console.log(`Rotated to next Groq Key Index: ${currentGroqKeyIndex + 1}`);
-    }
+    // 3. Determine Rotation Bucket
+    let rotationKey = 'general';
+    if (selectedModel.includes('70b') && process.env.GROQ_KEYS_70B) rotationKey = 'bucket70b';
+    else if (selectedModel.includes('8b') && process.env.GROQ_KEYS_8B) rotationKey = 'bucket8b';
+
+    // 4. Rotate Key
+    // Increment first to avoid reusing the exact same key immediately if function is called rapidly
+    keyRotations[rotationKey] = (keyRotations[rotationKey] + 1) % keys.length;
+    let currentKeyIndex = keyRotations[rotationKey];
+
+    console.log(`[Groq] Using Key Bucket: ${rotationKey} | Index: ${currentKeyIndex + 1}/${keys.length}`);
 
     // Prevent overlapping requests
     if (isGenerating) {
@@ -410,17 +444,17 @@ async function sendMessageToGroq(userMessage) {
     const maxAttempts = keys.length; // Try each key once
 
     while (attempts < maxAttempts) {
-        const currentKey = keys[currentGroqKeyIndex];
+        const currentKey = keys[currentKeyIndex];
 
         try {
-            sendToRenderer('update-status', `Thinking (Groq Key ${currentGroqKeyIndex + 1})...`);
+            sendToRenderer('update-status', `Thinking (Groq ${selectedModel.includes('70b') ? '70B' : '8B'} Key ${currentKeyIndex + 1})...`);
 
             // Re-initialize Groq with current key
             const groq = new Groq({
                 apiKey: currentKey,
                 dangerouslyAllowBrowser: true,
                 timeout: 20000,
-                maxRetries: 0 // FAIL FAST: Don't retry same key, switch to next key immediately on 429/errors
+                maxRetries: 0 // FAIL FAST
             });
 
             // Build conversation messages (system prompt + history)
@@ -432,10 +466,6 @@ async function sendMessageToGroq(userMessage) {
                 false
             );
 
-            console.log('DEBUG: Groq Profile:', p);
-            console.log('DEBUG: Groq ResumeContext Length:', (lastSessionParams?.resumeContext || '').length);
-            console.log('DEBUG: Groq System Prompt Preview:', sPrompt.substring(0, 200));
-
             const messages = [
                 {
                     role: 'system',
@@ -443,7 +473,7 @@ async function sendMessageToGroq(userMessage) {
                 }
             ];
 
-            // Add history with STRICT truncation for Free Tier Limits (40k TPM)
+            // Add history with STRICT truncation
             const MAX_HISTORY_TURNS = 6;
             const recentHistory = conversationHistory.slice(-MAX_HISTORY_TURNS);
             recentHistory.forEach(turn => {
@@ -457,19 +487,15 @@ async function sendMessageToGroq(userMessage) {
 
             messages.push({ role: 'user', content: userMessage });
 
-            console.log(`Sending message to Groq (Key Index: ${currentGroqKeyIndex})...`);
+            console.log(`Sending message...`);
 
             messageBuffer = '';
-
-            // Dynamic Model Selection
-            const selectedModel = selectModel(userMessage);
-            console.log(`[Groq] Selected Model: ${selectedModel} for input length: ${userMessage ? userMessage.length : 0}`);
 
             // Add explicit timeout race
             const completionPromise = groq.chat.completions.create({
                 messages: messages,
                 model: selectedModel,
-                temperature: 0.2, // LOW TEMP for High Precision (No Hallucinations)
+                temperature: 0.2,
                 max_tokens: 2048,
                 top_p: 1,
                 stream: true,
@@ -477,7 +503,7 @@ async function sendMessageToGroq(userMessage) {
             });
 
             const timeoutPromise = new Promise((_, reject) =>
-                setTimeout(() => reject(new Error('Groq request timed out')), 8000) // 8s timeout (Increased from 2s to prevent false failures)
+                setTimeout(() => reject(new Error('Groq request timed out')), 8000)
             );
 
             const startTime = Date.now();
@@ -497,7 +523,7 @@ async function sendMessageToGroq(userMessage) {
 
             console.log(`Groq Latency: ${responseTimeSeconds}s | Length: ${messageBuffer.length}`);
 
-            const finalResponse = `${messageBuffer}\n\n*[Response Time: ${responseTimeSeconds}s | Key: ${currentGroqKeyIndex + 1}]*`;
+            const finalResponse = `${messageBuffer}\n\n*[Response Time: ${responseTimeSeconds}s | Model: ${selectedModel} | Key: ${currentKeyIndex + 1}]*`;
             sendToRenderer('update-response', finalResponse);
 
             if (userMessage && messageBuffer) {
@@ -511,14 +537,15 @@ async function sendMessageToGroq(userMessage) {
             return true; // Signal success
 
         } catch (error) {
-            console.error(`Error with Groq Key ${currentGroqKeyIndex + 1}:`, error.message);
+            console.error(`Error with Groq Key ${currentKeyIndex + 1}:`, error.message);
 
-            // AGGRESSIVE ROTATION: Rotate key on ANY error (Timeout, 429, 401, 500, etc.)
-            console.warn(`Key ${currentGroqKeyIndex + 1} failed/timed out. Switching to next key...`);
-            currentGroqKeyIndex = (currentGroqKeyIndex + 1) % keys.length;
+            // Rotate to next key on error
+            console.warn(`Key ${currentKeyIndex + 1} failed. Switching to next key...`);
+            currentKeyIndex = (currentKeyIndex + 1) % keys.length;
+            keyRotations[rotationKey] = currentKeyIndex; // Update global tracker
+
             attempts++;
             sendToRenderer('update-status', `Groq Key ${attempts} Failed (${error.message}). Switching...`);
-            // Continue loop to try next key immediately
             continue;
         }
     }
@@ -533,7 +560,7 @@ async function sendMessageToGroq(userMessage) {
 
 async function sendMessageToOpenAI(userMessage) {
     // HYBRID ROUTING CHECK
-    if (process.env.GROQ_API_KEY) {
+    if (process.env.GROQ_API_KEY || process.env.GROQ_KEYS_70B || process.env.GROQ_KEYS_8B) {
         console.log('Hybrid Mode: Routing chat to Groq (Exclusive)...');
         const groqSuccess = await sendMessageToGroq(userMessage);
 
@@ -1261,6 +1288,11 @@ module.exports = {
 async function triggerManualAnswer() {
     if (!manualTranscriptionBuffer || manualTranscriptionBuffer.trim().length === 0) {
         console.log('Manual Trigger: Buffer is empty, ignoring.');
+        try {
+            sendToRenderer('update-status', 'Buffer Empty! (Speak first, then F2)');
+        } catch (e) {
+            console.error('Failed to send status update:', e);
+        }
         return;
     }
 

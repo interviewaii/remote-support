@@ -34,16 +34,13 @@ function selectModel(userMessage) {
         return 'llama-3.3-70b-versatile'; // Default to smart if input is weird
     }
 
-    // FORCE OVERRIDE: 8B model is blocked for this project, so we MUST use 70B for everything.
-    console.log(`[ModelRouter] Enforcing 70B model (8B is blocked/restricted)`);
-    return 'llama-3.3-70b-versatile';
+    const msg = userMessage;
+    const lowerMsg = msg.toLowerCase();
 
-    /* 
-    // ORIGINAL LOGIC (Disabled to fix 403 Error)
     // 1. Length Check
     const wordCount = msg.split(/\s+/).length;
     if (wordCount > 15) {
-        console.log(`[ModelRouter] Complexity: High (Length: ${wordCount} words) -> Usage: 70B`);
+        console.log(`[ModelRouter] Complexity: High (Length: ${wordCount} words) -> Usage: 70B (Long Query)`);
         return 'llama-3.3-70b-versatile';
     }
 
@@ -58,7 +55,6 @@ function selectModel(userMessage) {
     // 3. Fallback to Simple
     console.log(`[ModelRouter] Complexity: Low (Short & Simple) -> Usage: 8B`);
     return 'llama-3.1-8b-instant';
-    */
 }
 
 module.exports = {

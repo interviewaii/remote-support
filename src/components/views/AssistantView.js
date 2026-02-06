@@ -1055,6 +1055,27 @@ export class AssistantView extends LitElement {
         }, 0);
     }
 
+    scrollToNewResponse() {
+        setTimeout(() => {
+            const container = this.shadowRoot.querySelector('.response-container');
+            if (!container) return;
+
+            // Prioritize streaming item if it exists
+            const streamingItem = container.querySelector('.response-item.streaming');
+            if (streamingItem) {
+                streamingItem.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                return;
+            }
+
+            // Otherwise, last response item
+            const items = container.querySelectorAll('response-item');
+            if (items.length > 0) {
+                const lastItem = items[items.length - 1];
+                lastItem.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            }
+        }, 100);
+    }
+
     firstUpdated() {
         super.firstUpdated();
         this.updateResponseContent();
@@ -1067,6 +1088,14 @@ export class AssistantView extends LitElement {
             changedProperties.has('streamingContent') ||
             changedProperties.has('viewMode')) {
             this.updateResponseContent();
+        }
+
+        // Auto-scroll to start of new response
+        const startedStreaming = changedProperties.has('streamingContent') && !changedProperties.get('streamingContent') && this.streamingContent;
+        const newResponseAdded = changedProperties.has('responses') && changedProperties.get('responses') && this.responses.length > changedProperties.get('responses').length;
+
+        if (startedStreaming || newResponseAdded) {
+            this.scrollToNewResponse();
         }
     }
 
@@ -1108,6 +1137,12 @@ export class AssistantView extends LitElement {
         this.dispatchEvent(new CustomEvent('back-clicked'));
     }
 
+    toggleViewMode() {
+        this.viewMode = this.viewMode === 'scrolling' ? 'pagination' : 'scrolling';
+        localStorage.setItem('viewMode', this.viewMode);
+        this.requestUpdate();
+    }
+
     render() {
         const responseCounter = this.getResponseCounter();
 
@@ -1119,6 +1154,13 @@ export class AssistantView extends LitElement {
                             <line x1="19" y1="12" x2="5" y2="12"></line>
                             <polyline points="12 19 5 12 12 5"></polyline>
                         </svg>
+                    </button>
+
+                    <button class="nav-button" @click=${this.toggleViewMode} title="${this.viewMode === 'scrolling' ? 'Switch to Paged View' : 'Switch to Scroll View'}" style="margin-left: 8px;">
+                        ${this.viewMode === 'scrolling'
+                ? html`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="2" width="16" height="20" rx="2"/><line x1="8" y1="12" x2="16" y2="12"/><line x1="8" y1="8" x2="16" y2="8"/><line x1="8" y1="16" x2="16" y2="16"/></svg>`
+                : html`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="2"/><line x1="9" y1="9" x2="15" y2="9"/><line x1="15" y1="13" x2="9" y2="13"/></svg>`
+            }
                     </button>
                     ${this.responses.length > 0 ? html`
                         <span class="response-counter" style="margin-left: 10px;">${responseCounter}</span>
