@@ -14,11 +14,14 @@ export class CustomizeView extends LitElement {
         }
 
         :host {
-            display: block;
+            display: flex;
+            flex-direction: column;
             padding: 12px;
             margin: 0 auto;
             max-width: 700px;
             height: 100%;
+            box-sizing: border-box;
+            overflow: hidden;
         }
 
         .settings-container {
@@ -428,8 +431,9 @@ export class CustomizeView extends LitElement {
             border-bottom: 2.5px solid var(--accent-color, #fff);
         }
         .settings-tab-content {
-            min-height: 320px;
-            height: 100%;
+            min-height: 0;
+            flex: 1;
+            height: auto;
             overflow-y: auto;
             padding-right: 6px; /* space for scrollbar */
             scrollbar-gutter: stable;
@@ -465,10 +469,11 @@ export class CustomizeView extends LitElement {
             -webkit-backdrop-filter: blur(15px);
             padding: 32px 28px 24px 28px;
             margin: 0 auto;
-            max-width: 420px;
+            width: 90%;
+            max-width: 600px;
             display: flex;
             flex-direction: column;
-            align-items: flex-start;
+            align-items: stretch;
             gap: 18px;
         }
         .card-title {
@@ -747,6 +752,13 @@ export class CustomizeView extends LitElement {
                 icon: '💻',
                 color: '#57f287'
             },
+            {
+                value: 'senior_architect',
+                name: '10+ Years Exp (Architect)',
+                description: 'Deep technical deep-dives, system design, and complex scenario-based Q&A.',
+                icon: '🏛️',
+                color: '#ED4245'
+            },
         ];
     }
 
@@ -790,6 +802,7 @@ export class CustomizeView extends LitElement {
             student: 'Student / Candidate',
             interview: 'Job Interview',
             coding: 'Coding Interview',
+            senior_architect: '10+ Years Exp (Architect)',
             sales: 'Sales Call',
             meeting: 'Business Meeting',
             presentation: 'Presentation',
@@ -1469,33 +1482,76 @@ export class CustomizeView extends LitElement {
                 ` : ''}
                 ${this.activeTab === 'advanced' ? html`
                     <div class="settings-card">
-                        <div class="card-title"><span>⚙️</span> Advanced</div>
+                        <div class="card-title"><span>⚙️</span> Advanced Settings</div>
                         <div class="card-content">
-                            <div class="slider-header">
-                                <label class="form-label">Response Speed (Silence Detection)</label>
-                                <span class="slider-value">${this.silenceThreshold}s</span>
-                            </div>
-                            <div class="slider-container">
-                                <input type="range" class="slider-input" min="0.3" max="0.8" step="0.1" .value=${this.silenceThreshold} @input=${this.handleSilenceChange} />
-                                <div class="slider-labels">
-                                    <span>Fast (0.3s)</span>
-                                    <span>Slow (0.8s)</span>
-                                </div>
-                            </div>
-                            <div class="form-description">Adjusts how long the AI waits for silence before responding.</div>
                             
-                            <hr style="border: 0; border-top: 1px solid var(--card-border); margin: 8px 0;">
+                            <!-- Performance Section -->
+                            <div style="margin-bottom: 24px;">
+                                <h3 style="font-size: 14px; font-weight: 600; color: var(--accent-color); margin-bottom: 16px; text-transform: uppercase; letter-spacing: 0.5px; display: flex; align-items: center; gap: 8px;">
+                                    <span>⚡</span> Performance Tuning
+                                </h3>
+                                
+                                <div class="slider-header">
+                                    <label class="form-label">Response Speed (Silence Trigger)</label>
+                                    <span class="slider-value">${this.silenceThreshold}s</span>
+                                </div>
+                                <div class="slider-container">
+                                    <input type="range" class="slider-input" min="0.1" max="1.0" step="0.1" .value=${this.silenceThreshold} @input=${this.handleSilenceChange} />
+                                    <div class="slider-labels">
+                                        <span>Instant (0.1s)</span>
+                                        <span>Relaxed (1.0s)</span>
+                                    </div>
+                                </div>
+                                <div class="form-description" style="margin-bottom: 16px;">How long to wait for silence before the AI responds. Lower = Faster.</div>
 
-                            <div class="slider-header">
-                                <label class="form-label">Font Size</label>
-                                <span class="slider-value">${this.fontSize}px</span>
+                                <div class="slider-header">
+                                    <label class="form-label">Audio Latency (Chunk Speed)</label>
+                                    <span class="slider-value">${this.audioChunkDuration || 0.25}s</span>
+                                </div>
+                                <div class="slider-container">
+                                    <input type="range" class="slider-input" min="0.1" max="1.0" step="0.05" .value=${this.audioChunkDuration || 0.25} @input=${this.handleAudioChunkDurationChange} />
+                                    <div class="slider-labels">
+                                        <span>Extreme (0.1s)</span>
+                                        <span>Stable (1.0s)</span>
+                                    </div>
+                                </div>
+                                <div class="form-description">Controls processing frequency. 0.1s gives near real-time performance.</div>
                             </div>
-                            <div class="slider-container">
-                                <input type="range" class="slider-input" min="10" max="32" step="1" .value=${this.fontSize || 20} @input=${this.handleFontSizeChange} />
+
+                            <hr style="border: 0; border-top: 1px solid var(--card-border); margin: 0 0 24px 0;">
+
+                            <!-- Interface Section -->
+                            <div style="margin-bottom: 24px;">
+                                <h3 style="font-size: 14px; font-weight: 600; color: var(--accent-color); margin-bottom: 16px; text-transform: uppercase; letter-spacing: 0.5px; display: flex; align-items: center; gap: 8px;">
+                                    <span>🎨</span> Interface
+                                </h3>
+
+                                <div class="slider-header">
+                                    <label class="form-label">Font Size</label>
+                                    <span class="slider-value">${this.fontSize}px</span>
+                                </div>
+                                <div class="slider-container">
+                                    <input type="range" class="slider-input" min="10" max="32" step="1" .value=${this.fontSize || 20} @input=${this.handleFontSizeChange} />
+                                    <div class="slider-labels">
+                                        <span>Small (10px)</span>
+                                        <span>Large (32px)</span>
+                                    </div>
+                                </div>
+                                <div class="form-description">Adjust text size for better readability.</div>
                             </div>
-                            <div class="form-description">Make things bigger or smaller. Your call!</div>
-                            <button class="clear-data-btn" @click=${() => { localStorage.clear(); location.reload(); }}>Clear All Data</button>
-                            <div class="form-description">This will reset all your settings and data.</div>
+
+                            <hr style="border: 0; border-top: 1px solid var(--card-border); margin: 0 0 24px 0;">
+
+                            <!-- Data Section -->
+                            <div>
+                                <h3 style="font-size: 14px; font-weight: 600; color: #ff6b6b; margin-bottom: 16px; text-transform: uppercase; letter-spacing: 0.5px; display: flex; align-items: center; gap: 8px;">
+                                    <span>⚠️</span> Danger Zone
+                                </h3>
+                                <button class="clear-data-btn" style="width: 100%; border-color: #ff6b6b; color: #ff6b6b;" @click=${() => { if (confirm('Reset all settings?')) { localStorage.clear(); location.reload(); } }}>
+                                    Reset All App Data
+                                </button>
+                                <div class="form-description" style="text-align: center; margin-top: 8px;">This will wipe settings, resume context, and shortcuts.</div>
+                            </div>
                         </div>
                     </div>
                 ` : ''}

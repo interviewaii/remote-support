@@ -61,7 +61,12 @@ function initializeNewSession() {
     currentTranscription = '';
     conversationHistory = [];
     isGenerating = false; // Force reset generation lock
-    console.log('New conversation session started:', currentSessionId, '| isGenerating reset to false');
+
+    // Clear Audio Buffers to prevent old noise/hallucinations from triggering immediately
+    receivedAudioBuffer = [];
+    manualTranscriptionBuffer = "";
+
+    console.log('New conversation session started:', currentSessionId, '| isGenerating reset to false', '| Audio Buffers Cleared');
 }
 
 function saveConversationTurn(transcription, aiResponse) {
@@ -311,23 +316,33 @@ async function transcribeAudioWithWhisper(audioBuffer) {
 
                 // console.log(`Transcribing with Groq (distil-whisper)... Key: ${randomKey.substring(0, 10)}...`);
 
+
+                // Prepare Dynamic Prompt with Resume Context to fix "spling mistakes"
+                let techKeywords = "Technical Interview: Java, Python, JavaScript, React, Spring Boot, Microservices, Kubernetes, Docker, AWS, Azure, SQL, NoSQL, System Design, Scalability, CI/CD, Maven, Gradle, REST API, GraphQL, Redis, Kafka, Distributed Systems, Algorithms, Data Structures.";
+
+                if (typeof lastSessionParams !== 'undefined' && lastSessionParams && lastSessionParams.resumeContext) {
+                    const resumeSnippet = lastSessionParams.resumeContext.substring(0, 500).replace(/[\r\n]+/g, " ");
+                    techKeywords += " Context: " + resumeSnippet;
+                }
+                const safePrompt = techKeywords.substring(0, 800);
+
                 const groq = new Groq({ apiKey: randomKey, dangerouslyAllowBrowser: true });
-                console.log(`[Groq Whisper] Requesting transcription using Turbo model... Key: ${randomKey.substring(0, 8)}...`);
+                console.log(`[Groq Whisper] Requesting transcription using LARGE-V3 (Max Accuracy)...`);
 
                 const transcription = await groq.audio.transcriptions.create({
                     file: fs.createReadStream(tempFile),
-                    model: 'whisper-large-v3-turbo', // The Fast & Efficient Turbo Model
+                    model: 'whisper-large-v3-turbo', // Optimized: Turbo for Speed + Prompt for Accuracy
                     language: 'en',
                     response_format: 'json',
                     temperature: 0.0,
-                    prompt: 'Transcribe in English only. Ignore Hindi, Marathi, or non-English speech. Programming interview: Java, Python, JavaScript, React, database, SQL, API.',
+                    prompt: safePrompt,
                 });
 
                 transcriptionText = transcription.text;
                 console.log('Groq Transcription Success:', transcriptionText);
 
                 // Send User's Transcription to UI immediately
-                sendToRenderer('update-transcription', transcriptionText);
+                // sendToRenderer('update-transcription', transcriptionText); // Disabled: Remove blue UI per user request
             } catch (groqError) {
                 console.error(`❌ Groq Whisper FAILED: ${groqError.message}`);
                 console.error(JSON.stringify(groqError, null, 2));
@@ -802,6 +817,115 @@ function stopMacOSAudioCapture() {
     audioChunksForTranscription = [];
 }
 
+async function processPartialTranscription() {
+    if (receivedAudioBuffer.length === 0 || isTranscribing) return;
+
+    // Don't clear receivedAudioBuffer, just copy it
+    const currentBuffer = Buffer.concat(receivedAudioBuffer);
+
+    try {
+        // Whisper call for partial result
+        const transcription = await transcribeAudioWithWhisper(currentBuffer);
+        if (transcription && transcription.trim() !== lastPartialResults) {
+            lastPartialResults = transcription.trim();
+            console.log(`Partial Transcription: "${lastPartialResults}"`);
+            sendToRenderer('update-transcription-partial', lastPartialResults);
+        }
+    } catch (error) {
+        console.error('Error in partial transcription:', error);
+    }
+}
+
+async function processAudioBuffer() {
+    if (receivedAudioBuffer.length === 0 || isTranscribing || isGenerating) return;
+
+    const combinedBuffer = Buffer.concat(receivedAudioBuffer);
+    const chunkCount = receivedAudioBuffer.length;
+    receivedAudioBuffer = []; // Reset accumulator
+    if (silenceTimer) clearTimeout(silenceTimer); // Clear any pending flush
+
+    const durationMs = chunkCount * 250; // ~250ms per chunk (at 16k/4096 buffer)
+    console.log(`Processing accumulated audio: ${combinedBuffer.length} bytes (${chunkCount} chunks = ${durationMs}ms)`);
+
+    // ENERGY CHECK: Prevent processing silence (Fix for 60s silence -> Hallucination)
+    const isLoudEnough = analyzeAudioEnergy(combinedBuffer);
+    if (!isLoudEnough) {
+        console.log('Skipping processing: Audio energy too low (Silence/Static)');
+        return;
+    }
+
+    // Transcribe audio with Whisper
+    const transcription = await transcribeAudioWithWhisper(combinedBuffer);
+
+    if (transcription && transcription.trim().length > 0) {
+        const text = transcription.trim();
+        const lowerText = text.toLowerCase().replace(/[.,!?;]$/, "");
+        const wordCount = text.split(/\s+/).length;
+
+        // MANUAL MODE LOGIC
+        if (isManualMode) {
+            console.log(`[Manual Mode] Buffering: "${text}"`);
+            manualTranscriptionBuffer += text + " ";
+            // Update UI with partial progress so user knows it's hearing them
+            sendToRenderer('update-transcription-partial', manualTranscriptionBuffer);
+            return; // STOP HERE. Do not send to OpenAI/Groq yet.
+        }
+
+        // 1. Strict Hallucination Filter (Common Whisper artifacts on noise)
+        // Using Array instead of complex Regex to prevent syntax errors
+        const hallucinations = [
+            /^thank you\.?$/i, /^thanks\.?$/i, /^subtitles by/i, /^copyright/i, /^amara\.org/i, /^\. \.$/,
+            /^you\.?$/i, /^bye\.?$/i, /^unintelligible/i, /^\[.*\]$/,
+            /video nourishing/i, /driving devices/i, /Úú»ari/i
+        ];
+
+        // 2. Question/Relevance Triggers (Keywords that imply a valid query)
+        const validQuestionTriggers = /^(what|how|why|when|who|where|explain|define|describe|code|write|create|compare|difference|solve|fix|debug|optimize|tell|can|could|would|is|are|do|does|did|show|list|give)\b/i;
+
+        // 3. Tech Keywords (Allow these even if single words)
+        const validTechKeywords = /^(java|python|react|node|javascript|sql|nosql|docker|kubernetes|aws|azure|spring|api|rest|graphql|redux|html|css|algorithm|structure|system|design|database|linux|git|agile|scrum|testing|jest|junit|maven|gradle|jenkins|devops|cloud|microservices|frontend|backend|fullstack|net|c#|cpp|security|performance|scaling|caching|redis|kafka|mongodb|postgres|mysql|oracle)\b/i;
+
+        // OPTIMIZED NOISE FILTER:
+        // Rule 1: Ignore very short inputs (under 4 words) UNLESS they start with a valid question trigger OR are a tech keyword
+        if (wordCount < 4 && !validQuestionTriggers.test(lowerText) && !validTechKeywords.test(lowerText)) {
+            console.log(`Filtered short noise (No trigger/keyword): "${text}"`);
+            return;
+        }
+
+        // Rule 2: Strict Hallucination Check
+        if (hallucinations.some(h => h.test(lowerText))) {
+            console.log(`Filtered Whisper hallucination: "${text}"`);
+            return;
+        }
+
+        // 3. Duplicate & Recency Check - OPTIMIZED: 5s window for faster re-engagement
+        const now = Date.now();
+
+        if (text === lastSentTranscription && (now - lastSentTimestamp < 5000)) {
+            console.log(`Skipped duplicate transcription: "${text}"`);
+            return;
+        }
+
+        if (now - lastImageAnalysisTimestamp < 5000 && text.length < 30) {
+            const genericFollowups = /^(solve (this|it)|what is (this|it)|what's (this|it)|can you solve|help me|tell me)$/i;
+            if (genericFollowups.test(lowerText) || lowerText.split(' ').length <= 3) {
+                console.log(`Skipped short/generic audio response during screenshot cool-down: "${text}"`);
+                return;
+            }
+        }
+
+        console.log('Audio transcribed:', transcription);
+        currentTranscription += transcription + ' ';
+        lastSentTranscription = text;
+        lastSentTimestamp = now;
+
+        // Send to OpenAI for response
+        await sendMessageToOpenAI(transcription);
+    } else {
+        console.log(`[Audio Processing] Transcription returned empty (Silence or Error). Length: ${transcription ? transcription.length : 0}`);
+    }
+}
+
 function setupOpenAIIpcHandlers(sessionRef) {
     // Store the sessionRef globally for reconnection access
     global.openaiSessionRef = sessionRef;
@@ -869,106 +993,7 @@ function setupOpenAIIpcHandlers(sessionRef) {
         }
     });
 
-    async function processPartialTranscription() {
-        if (receivedAudioBuffer.length === 0 || isTranscribing) return;
 
-        // Don't clear receivedAudioBuffer, just copy it
-        const currentBuffer = Buffer.concat(receivedAudioBuffer);
-
-        try {
-            // Whisper call for partial result
-            const transcription = await transcribeAudioWithWhisper(currentBuffer);
-            if (transcription && transcription.trim() !== lastPartialResults) {
-                lastPartialResults = transcription.trim();
-                console.log(`Partial Transcription: "${lastPartialResults}"`);
-                sendToRenderer('update-transcription-partial', lastPartialResults);
-            }
-        } catch (error) {
-            console.error('Error in partial transcription:', error);
-        }
-    }
-
-    async function processAudioBuffer() {
-        if (receivedAudioBuffer.length === 0 || isTranscribing || isGenerating) return;
-
-        const combinedBuffer = Buffer.concat(receivedAudioBuffer);
-        const chunkCount = receivedAudioBuffer.length;
-        receivedAudioBuffer = []; // Reset accumulator
-        if (silenceTimer) clearTimeout(silenceTimer); // Clear any pending flush
-
-        const durationMs = chunkCount * 250; // ~250ms per chunk (at 16k/4096 buffer)
-        console.log(`Processing accumulated audio: ${combinedBuffer.length} bytes (${chunkCount} chunks = ${durationMs}ms)`);
-
-        // Transcribe audio with Whisper
-        const transcription = await transcribeAudioWithWhisper(combinedBuffer);
-
-        if (transcription && transcription.trim().length > 0) {
-            const text = transcription.trim();
-            const lowerText = text.toLowerCase().replace(/[.,!?;]$/, "");
-            const wordCount = text.split(/\s+/).length;
-
-            // MANUAL MODE LOGIC
-            if (isManualMode) {
-                console.log(`[Manual Mode] Buffering: "${text}"`);
-                manualTranscriptionBuffer += text + " ";
-                // Update UI with partial progress so user knows it's hearing them
-                sendToRenderer('update-transcription-partial', manualTranscriptionBuffer);
-                return; // STOP HERE. Do not send to OpenAI/Groq yet.
-            }
-
-            // 1. Strict Hallucination Filter (Common Whisper artifacts on noise)
-            // Using Array instead of complex Regex to prevent syntax errors
-            const hallucinations = [
-                /^thank you\.?$/i, /^thanks\.?$/i, /^subtitles by/i, /^copyright/i, /^amara\.org/i, /^\. \.$/,
-                /^you\.?$/i, /^bye\.?$/i, /^unintelligible/i, /^\[.*\]$/
-            ];
-
-            // 2. Question/Relevance Triggers (Keywords that imply a valid query)
-            const validQuestionTriggers = /^(what|how|why|when|who|where|explain|define|describe|code|write|create|compare|difference|solve|fix|debug|optimize|tell|can|could|would|is|are|do|does|did|show|list|give)\b/i;
-
-            // 3. Tech Keywords (Allow these even if single words)
-            const validTechKeywords = /^(java|python|react|node|javascript|sql|nosql|docker|kubernetes|aws|azure|spring|api|rest|graphql|redux|html|css|algorithm|structure|system|design|database|linux|git|agile|scrum|testing|jest|junit|maven|gradle|jenkins|devops|cloud|microservices|frontend|backend|fullstack|net|c#|cpp|security|performance|scaling|caching|redis|kafka|mongodb|postgres|mysql|oracle)\b/i;
-
-            // OPTIMIZED NOISE FILTER:
-            // Rule 1: Ignore very short inputs (under 4 words) UNLESS they start with a valid question trigger OR are a tech keyword
-            if (wordCount < 4 && !validQuestionTriggers.test(lowerText) && !validTechKeywords.test(lowerText)) {
-                console.log(`Filtered short noise (No trigger/keyword): "${text}"`);
-                return;
-            }
-
-            // Rule 2: Strict Hallucination Check
-            if (hallucinations.some(h => h.test(lowerText))) {
-                console.log(`Filtered Whisper hallucination: "${text}"`);
-                return;
-            }
-
-            // 3. Duplicate & Recency Check - OPTIMIZED: 5s window for faster re-engagement
-            const now = Date.now();
-
-            if (text === lastSentTranscription && (now - lastSentTimestamp < 5000)) {
-                console.log(`Skipped duplicate transcription: "${text}"`);
-                return;
-            }
-
-            if (now - lastImageAnalysisTimestamp < 5000 && text.length < 30) {
-                const genericFollowups = /^(solve (this|it)|what is (this|it)|what's (this|it)|can you solve|help me|tell me)$/i;
-                if (genericFollowups.test(lowerText) || lowerText.split(' ').length <= 3) {
-                    console.log(`Skipped short/generic audio response during screenshot cool-down: "${text}"`);
-                    return;
-                }
-            }
-
-            console.log('Audio transcribed:', transcription);
-            currentTranscription += transcription + ' ';
-            lastSentTranscription = text;
-            lastSentTimestamp = now;
-
-            // Send to OpenAI for response
-            await sendMessageToOpenAI(transcription);
-        } else {
-            console.log(`[Audio Processing] Transcription returned empty (Silence or Error). Length: ${transcription ? transcription.length : 0}`);
-        }
-    }
 
     ipcMain.handle('send-image-content', async (event, { data, prompt, debug, imageQuality }) => {
         const hasGroq = process.env.GROQ_API_KEY || process.env.GROQ_KEYS_70B || process.env.GROQ_KEYS_8B;
@@ -1331,6 +1356,11 @@ module.exports = {
 };
 
 async function triggerManualAnswer() {
+    // FIX: Force flush pending audio to ensure "Simultaneous" F3->Speak->F2 works
+    if (receivedAudioBuffer.length > 0) {
+        console.log('Force processing audio before Manual Trigger...');
+        await processAudioBuffer();
+    }
     if (!manualTranscriptionBuffer || manualTranscriptionBuffer.trim().length === 0) {
         console.log('Manual Trigger: Buffer is empty, ignoring.');
         try {

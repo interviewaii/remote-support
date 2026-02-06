@@ -21,6 +21,10 @@ export class AssistantView extends LitElement {
         }
 
         .response-container {
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+            
             flex: 1 1 auto;
             min-height: 60px;
             max-height: 80vh;
@@ -38,6 +42,35 @@ export class AssistantView extends LitElement {
             animation: fadeInScale 0.5s cubic-bezier(0.25, 0.46, 0.45, 0.94);
             transition: max-height 0.3s cubic-bezier(0.4, 0, 0.2, 1);
             margin-bottom: 0;
+            
+            /* Performance optimization for scrolling */
+            will-change: scroll-position;
+        }
+
+        .response-item.user {
+            align-self: flex-end;
+            background: rgba(100, 149, 237, 0.15); /* Cornflower blue tint */
+            border: 1px solid rgba(100, 149, 237, 0.3);
+            border-radius: 12px 12px 0 12px;
+            padding: 12px 16px;
+            max-width: 80%;
+            margin-left: auto;
+            animation: slideInRight 0.3s ease-out;
+        }
+
+        .response-item.ai {
+            align-self: flex-start;
+            width: 100%;
+            animation: slideInLeft 0.3s ease-out;
+        }
+        
+        @keyframes slideInRight {
+            from { opacity: 0; transform: translateX(20px); }
+            to { opacity: 1; transform: translateX(0); }
+        }
+        @keyframes slideInLeft {
+            from { opacity: 0; transform: translateX(-20px); }
+            to { opacity: 1; transform: translateX(0); }
         }
 
         .loading-area {
@@ -1365,7 +1398,7 @@ function renderMarkdown(content) {
 // Lightweight component for individual responses
 class ResponseItem extends LitElement {
     static properties = {
-        content: { type: String },
+        content: { type: Object }, // Support {text, sender} object
         index: { type: Number },
         isStreaming: { type: Boolean }
     };
@@ -1375,8 +1408,9 @@ class ResponseItem extends LitElement {
     }
 
     render() {
+        const isUser = this.content && this.content.sender === 'user';
         return html`
-            <div class="response-item ${this.isStreaming ? 'streaming' : ''}" data-index="${this.index}">
+            <div class="response-item ${this.isStreaming ? 'streaming' : ''} ${isUser ? 'user' : 'ai'}" data-index="${this.index}">
                 <!-- Content injected via updated() -->
             </div>
         `;
@@ -1386,8 +1420,18 @@ class ResponseItem extends LitElement {
         if (changedProperties.has('content')) {
             const div = this.querySelector('.response-item');
             if (div) {
-                const markdown = renderMarkdown(this.content + (this.isStreaming ? ' ▮' : ''));
-                if (div.innerHTML !== markdown) { // Avoid unnecessary DOM writes
+                // Extract text from Object or String
+                let textContent = '';
+                if (typeof this.content === 'string') {
+                    textContent = this.content;
+                } else if (this.content && this.content.text) {
+                    textContent = this.content.text;
+                }
+
+                const fullText = textContent + (this.isStreaming ? ' ▮' : '');
+                const markdown = renderMarkdown(fullText);
+
+                if (div.innerHTML !== markdown) { // specific check to avoid redraw
                     div.innerHTML = markdown;
                 }
             }

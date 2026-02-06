@@ -733,6 +733,25 @@ export class InterviewCrackerApp extends LitElement {
         }
     }
 
+    // New method to handle user transcriptions from main process
+    addUserMessage(text) {
+        if (!text || !text.trim()) return;
+
+        // Optimize: Use requestAnimationFrame for smoother UI update if rapid
+        requestAnimationFrame(() => {
+            if (!this.responses) this.responses = [];
+
+            this.responses = [...this.responses, {
+                text: text,
+                sender: 'user',
+                timestamp: new Date().toLocaleTimeString()
+            }];
+
+            this.currentResponseIndex = this.responses.length - 1;
+            this.requestUpdate();
+        });
+    }
+
     async handleAPIKeyHelp() {
         if (window.require) {
             const { ipcRenderer } = window.require('electron');

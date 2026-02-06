@@ -156,6 +156,14 @@ ipcRenderer.on('update-status', (event, status) => {
     interviewCrackerElement().setStatus(status);
 });
 
+// Listen for user transcription updates (to show in UI)
+ipcRenderer.on('update-transcription', (event, text) => {
+    // console.log('User Transcription:', text);
+    if (interviewCrackerElement().addUserMessage) {
+        interviewCrackerElement().addUserMessage(text);
+    }
+});
+
 // Listen for responses - REMOVED: This is handled in InterviewCrackerApp.js to avoid duplicates
 // ipcRenderer.on('update-response', (event, response) => {
 //     console.log('Gemini response:', response);
@@ -257,8 +265,9 @@ async function startCapture(screenshotIntervalSeconds = 2, imageQuality = 'mediu
 
 
             // Also get microphone for Windows
-            console.log('🎤 [DEBUG] Requesting microphone access...');
+            // console.log('🎤 [DEBUG] Requesting microphone access...');
             let micStream = null;
+            /* DISABLED PER USER REQUEST (System Audio Only)
             try {
                 micStream = await navigator.mediaDevices.getUserMedia({
                     audio: {
@@ -274,10 +283,11 @@ async function startCapture(screenshotIntervalSeconds = 2, imageQuality = 'mediu
             } catch (micError) {
                 console.error('❌ Failed to get microphone access on Windows:', micError);
             }
+            */
 
             // Setup audio processing for Windows (System + Mic)
             console.log('🎤 [DEBUG] Setting up Windows audio processing...');
-            setupWindowsAudioProcessing(mediaStream, micStream);
+            setupWindowsAudioProcessing(mediaStream, null); // Pass null for Mic
             console.log('✅ Windows audio processing setup complete');
         }
 
