@@ -996,6 +996,33 @@ export class AssistantView extends LitElement {
             ipcRenderer.on('navigate-next-response', this.handleNextResponse);
             ipcRenderer.on('scroll-response-up', this.handleScrollUp);
             ipcRenderer.on('scroll-response-down', this.handleScrollDown);
+
+            // Restore missing data listeners
+            this.handleUpdateResponse = (event, content) => {
+                // If content is empty/null, do nothing
+                if (!content) return;
+
+                // Stop streaming visual
+                this.streamingContent = '';
+
+                // Add to responses
+                this.responses = [...this.responses, content];
+                this.currentResponseIndex = this.responses.length - 1;
+            };
+
+            this.handleUpdateResponseStream = (event, content) => {
+                if (content) {
+                    this.streamingContent += content;
+                }
+            };
+
+            this.handleUpdateStatus = (event, status) => {
+                console.log('Status update:', status);
+            };
+
+            ipcRenderer.on('update-response', this.handleUpdateResponse);
+            ipcRenderer.on('update-response-stream', this.handleUpdateResponseStream);
+            ipcRenderer.on('update-status', this.handleUpdateStatus);
         }
     }
 
@@ -1026,6 +1053,17 @@ export class AssistantView extends LitElement {
             }
             if (this.handleScrollDown) {
                 ipcRenderer.removeListener('scroll-response-down', this.handleScrollDown);
+            }
+
+            // Cleanup data listeners
+            if (this.handleUpdateResponse) {
+                ipcRenderer.removeListener('update-response', this.handleUpdateResponse);
+            }
+            if (this.handleUpdateResponseStream) {
+                ipcRenderer.removeListener('update-response-stream', this.handleUpdateResponseStream);
+            }
+            if (this.handleUpdateStatus) {
+                ipcRenderer.removeListener('update-status', this.handleUpdateStatus);
             }
         }
     }

@@ -7,7 +7,7 @@ let audioContext = null;
 let audioProcessor = null;
 let micAudioProcessor = null;
 let audioBuffer = [];
-const SAMPLE_RATE = 24000;
+const SAMPLE_RATE = 16000; // Standard Whisper Sample Rate
 const AUDIO_CHUNK_DURATION = 0.25; // seconds - Optimized to 0.25s for "Immediate" (0.2s) analysis feel
 const BUFFER_SIZE = 4096; // Increased buffer size for stability
 
@@ -164,6 +164,8 @@ ipcRenderer.on('update-status', (event, status) => {
 // });
 
 async function startCapture(screenshotIntervalSeconds = 2, imageQuality = 'medium') {
+    console.log('🎤 [DEBUG] startCapture called with:', { screenshotIntervalSeconds, imageQuality });
+
     // Store the image quality for manual screenshots
     currentImageQuality = imageQuality;
 
@@ -172,6 +174,7 @@ async function startCapture(screenshotIntervalSeconds = 2, imageQuality = 'mediu
     console.log('🎯 Token tracker reset for new capture session');
 
     try {
+        console.log('🎤 [DEBUG] Platform detected:', process.platform);
         if (isMacOS) {
             // On macOS, use SystemAudioDump for audio and getDisplayMedia for screen
             console.log('Starting macOS capture with SystemAudioDump...');
@@ -230,7 +233,9 @@ async function startCapture(screenshotIntervalSeconds = 2, imageQuality = 'mediu
             console.log('Linux screen capture started');
         } else {
             // Windows - use display media with loopback for system audio
+            console.log('🎤 [DEBUG] Starting Windows audio capture...');
             try {
+                console.log('🎤 [DEBUG] Requesting getDisplayMedia...');
                 mediaStream = await navigator.mediaDevices.getDisplayMedia({
                     video: {
                         frameRate: 1,
@@ -245,16 +250,15 @@ async function startCapture(screenshotIntervalSeconds = 2, imageQuality = 'mediu
                         autoGainControl: true,
                     },
                 });
-                console.log('Windows system audio capture synchronized');
+                console.log('✅ Windows system audio capture synchronized');
             } catch (err) {
-                console.error('Failed to get system audio:', err);
+                console.error('❌ Failed to get system audio:', err);
             }
 
+
             // Also get microphone for Windows
+            console.log('🎤 [DEBUG] Requesting microphone access...');
             let micStream = null;
-            /* 
-            // DISABLE MICROPHONE CAPTURE - Optimization: Only capture system audio (interviewer)
-            // This prevents the user's voice from being transcribed and saves audio tokens
             try {
                 micStream = await navigator.mediaDevices.getUserMedia({
                     audio: {
@@ -266,15 +270,15 @@ async function startCapture(screenshotIntervalSeconds = 2, imageQuality = 'mediu
                     },
                     video: false,
                 });
-                console.log('Windows microphone capture synchronized');
+                console.log('✅ Windows microphone capture synchronized');
             } catch (micError) {
-                console.warn('Failed to get microphone access on Windows:', micError);
+                console.error('❌ Failed to get microphone access on Windows:', micError);
             }
-            */
-            console.log('Microphone capture disabled for cost optimization');
 
-            // Setup audio processing for Windows (System ONLY)
-            setupWindowsAudioProcessing(mediaStream, null);
+            // Setup audio processing for Windows (System + Mic)
+            console.log('🎤 [DEBUG] Setting up Windows audio processing...');
+            setupWindowsAudioProcessing(mediaStream, micStream);
+            console.log('✅ Windows audio processing setup complete');
         }
 
         console.log('MediaStream obtained:', {
@@ -364,8 +368,9 @@ function setupWindowsAudioProcessing(systemStream, micStream) {
         }
         const rms = Math.sqrt(sum / inputData.length);
 
-        // Only buffer if sound is audible (Threshold: 0.01 - reduced to capture soft speech)
-        if (rms > 0.01) {
+        // Only buffer if sound is audible (Threshold: 0.005 - balanced sensitivity)
+        if (rms > 0.005) {
+            // console.log('🎤 Sound detected! RMS:', rms); // Uncomment for verbose debugging
             audioBuffer.push(...inputData);
         } else {
             // If it's silent, we still want to maintain timing but skip sending to Whisper
@@ -387,13 +392,13 @@ function setupWindowsAudioProcessing(systemStream, micStream) {
             }
             const chunkRms = Math.sqrt(chunkSum / chunk.length);
 
-            if (chunkRms > 0.01) {
+            if (chunkRms > 0.005) {
                 const pcmData16 = convertFloat32ToInt16(chunk);
                 const base64Data = arrayBufferToBase64(pcmData16.buffer);
 
                 await ipcRenderer.invoke('send-audio-content', {
                     data: base64Data,
-                    mimeType: 'audio/pcm;rate=24000',
+                    mimeType: 'audio/pcm;rate=16000',
                 });
             }
         }
@@ -820,3 +825,26 @@ window.interviewAI = window.interviewCracker = {
     isMacOS: isMacOS,
     e: interviewCrackerElement,
 };
+
+
+// AUTO-START AUDIO CAPTURE
+// Wait for the page to fully load, then auto-start audio capture
+console.log('🎤 [DEBUG] Renderer.js loaded - setting up auto-start timer...');
+setTimeout(async () => {
+    console.log('🎤 [AUTO-START] Attempting to auto-start audio capture...');
+    try {
+        // Initialize Gemini/Groq session first
+        const profile = localStorage.getItem('selectedProfile') || 'interview';
+        const language = localStorage.getItem('selectedLanguage') || 'en-US';
+
+        console.log('🎤 [AUTO-START] Initializing session with profile:', profile);
+        await window.interviewAI.initializeGemini(profile, language);
+
+        console.log('🎤 [AUTO-START] Starting audio capture...');
+        await window.interviewAI.startCapture(2, 'medium');
+
+        console.log('✅ [AUTO-START] Audio capture started successfully!');
+    } catch (error) {
+        console.error('❌ [AUTO-START] Failed to auto-start audio:', error);
+    }
+}, 2000); // Wait 2 seconds for app to fully initialize

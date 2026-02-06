@@ -190,7 +190,11 @@ async function initializeOpenAISession(apiKey, customPrompt = '', resumeContext 
             });
             console.log('OpenAI initialized for Vision tasks.');
         } else {
-            console.warn('OpenAI API Key missing - Vision tasks will be disabled.');
+            if (process.env.GROQ_API_KEY || process.env.GROQ_KEYS_70B || process.env.GROQ_KEYS_8B) {
+                console.log('✅ GROQ MODE ACTIVE. Voice, Chat, & Vision (via Llama-3.2-11b) are ALL Operational.');
+            } else {
+                console.warn('⚠️ OpenAI AND Groq Keys missing - App functionality will be limited.');
+            }
         }
 
         // Initialize Groq if key is present (preferred for Chat)
@@ -292,7 +296,7 @@ async function transcribeAudioWithWhisper(audioBuffer) {
         const tempFile = path.join(os.tmpdir(), `audio_${Date.now()}.wav`);
 
         // Create WAV file from PCM data
-        const wavHeader = createWavHeader(audioBuffer.length, 24000, 1, 16);
+        const wavHeader = createWavHeader(audioBuffer.length, 16000, 1, 16);
         const wavBuffer = Buffer.concat([wavHeader, audioBuffer]);
         fs.writeFileSync(tempFile, wavBuffer);
 
@@ -316,11 +320,14 @@ async function transcribeAudioWithWhisper(audioBuffer) {
                     language: 'en',
                     response_format: 'json',
                     temperature: 0.0,
-                    prompt: 'Programming interview: Java, Python, JavaScript, React, database, SQL, API, algorithm, data structure, object-oriented, frontend, backend, microservices, Docker, Kubernetes',
+                    prompt: 'Transcribe in English only. Ignore Hindi, Marathi, or non-English speech. Programming interview: Java, Python, JavaScript, React, database, SQL, API.',
                 });
 
                 transcriptionText = transcription.text;
                 console.log('Groq Transcription Success:', transcriptionText);
+
+                // Send User's Transcription to UI immediately
+                sendToRenderer('update-transcription', transcriptionText);
             } catch (groqError) {
                 console.error(`❌ Groq Whisper FAILED: ${groqError.message}`);
                 console.error(JSON.stringify(groqError, null, 2));
@@ -453,7 +460,7 @@ async function sendMessageToGroq(userMessage) {
         const currentKey = keys[currentKeyIndex];
 
         try {
-            sendToRenderer('update-status', `Thinking (Groq ${selectedModel.includes('70b') ? '70B' : '8B'} Key ${currentKeyIndex + 1})...`);
+            sendToRenderer('update-status', 'Thinking...');
 
             // Re-initialize Groq with current key
             const groq = new Groq({
@@ -529,14 +536,14 @@ async function sendMessageToGroq(userMessage) {
 
             console.log(`Groq Latency: ${responseTimeSeconds}s | Length: ${messageBuffer.length}`);
 
-            const finalResponse = `${messageBuffer}\n\n*[Response Time: ${responseTimeSeconds}s | Model: ${selectedModel} | Key: ${currentKeyIndex + 1}]*`;
+            const finalResponse = `${messageBuffer}\n\n*[Response Time: ${responseTimeSeconds}s]*`;
             sendToRenderer('update-response', finalResponse);
 
             if (userMessage && messageBuffer) {
                 saveConversationTurn(userMessage, finalResponse);
             }
 
-            sendToRenderer('update-status', 'Listening (Groq)...');
+            sendToRenderer('update-status', 'Listening...');
 
             // Success! Break loop
             isGenerating = false;
@@ -551,14 +558,14 @@ async function sendMessageToGroq(userMessage) {
             keyRotations[rotationKey] = currentKeyIndex; // Update global tracker
 
             attempts++;
-            sendToRenderer('update-status', `Groq Key ${attempts} Failed (${error.message}). Switching...`);
+            sendToRenderer('update-status', `AI Service Failed (Attempt ${attempts}). Switching...`);
             continue;
         }
     }
 
     // If we land here, all keys failed
     console.error('All Groq API keys exhausted.');
-    sendToRenderer('update-status', 'Error: All Groq Keys Failed. Switching to OpenAI...');
+    sendToRenderer('update-status', 'Error: All AI Services Failed.');
     isGenerating = false;
     return false; // Signal failure to trigger fallback
 }
@@ -798,12 +805,13 @@ function stopMacOSAudioCapture() {
 function setupOpenAIIpcHandlers(sessionRef) {
     // Store the sessionRef globally for reconnection access
     global.openaiSessionRef = sessionRef;
-    let silenceThresholdMs = 500; // Default 500ms
+    let silenceThresholdMs = 1500; // INCREASED to 1.5s to prevent cutting off users thinking
 
     ipcMain.handle('initialize-gemini', async (event, apiKey, customPrompt, resumeContext, profile = 'interview', language = 'en-US', silenceThresholdParam = 0.5) => {
-        // Convert seconds (0.5) to ms (500)
-        silenceThresholdMs = Math.round(parseFloat(silenceThresholdParam) * 1000);
-        console.log(`Silence Threshold set to: ${silenceThresholdMs}ms`);
+        // Enforce Minimum Silence Threshold of 1.5s to allow for thinking pauses
+        // Even if frontend sends 0.5s, we override it here for better UX
+        silenceThresholdMs = Math.max(1500, silenceThresholdParam * 1000);
+        console.log(`Silence Threshold enforced to: ${silenceThresholdMs}ms`);
 
         const success = await initializeOpenAISession(apiKey, customPrompt, resumeContext, profile, language);
         if (success) {
@@ -814,8 +822,9 @@ function setupOpenAIIpcHandlers(sessionRef) {
     });
 
     ipcMain.handle('send-audio-content', async (event, { data, mimeType }) => {
-        if (!openaiClient) {
-            return { success: false, error: 'No active session' };
+        const hasGroq = process.env.GROQ_API_KEY || process.env.GROQ_KEYS_70B || process.env.GROQ_KEYS_8B;
+        if (!openaiClient && !hasGroq) {
+            return { success: false, error: 'No active session (OpenAI or Groq)' };
         }
 
         try {
@@ -887,7 +896,7 @@ function setupOpenAIIpcHandlers(sessionRef) {
         receivedAudioBuffer = []; // Reset accumulator
         if (silenceTimer) clearTimeout(silenceTimer); // Clear any pending flush
 
-        const durationMs = chunkCount * 25; // 25ms per chunk
+        const durationMs = chunkCount * 250; // ~250ms per chunk (at 16k/4096 buffer)
         console.log(`Processing accumulated audio: ${combinedBuffer.length} bytes (${chunkCount} chunks = ${durationMs}ms)`);
 
         // Transcribe audio with Whisper
@@ -908,7 +917,11 @@ function setupOpenAIIpcHandlers(sessionRef) {
             }
 
             // 1. Strict Hallucination Filter (Common Whisper artifacts on noise)
-            const hallucinations = /^(you|thanks?|thank you|bye|goodbye|you\.|thanks\.|subs? by|subtitle|thank you for watching|please subscribe|unintelligible|\[music\]|\[audio\]|\[silence\]|silence|amara\.org|subtitles by|copyright|all rights reserved|next|previous|select|start|stop|end|loading|buffering|transcript|transcription)$/i;
+            // Using Array instead of complex Regex to prevent syntax errors
+            const hallucinations = [
+                /^thank you\.?$/i, /^thanks\.?$/i, /^subtitles by/i, /^copyright/i, /^amara\.org/i, /^\. \.$/,
+                /^you\.?$/i, /^bye\.?$/i, /^unintelligible/i, /^\[.*\]$/
+            ];
 
             // 2. Question/Relevance Triggers (Keywords that imply a valid query)
             const validQuestionTriggers = /^(what|how|why|when|who|where|explain|define|describe|code|write|create|compare|difference|solve|fix|debug|optimize|tell|can|could|would|is|are|do|does|did|show|list|give)\b/i;
@@ -918,15 +931,13 @@ function setupOpenAIIpcHandlers(sessionRef) {
 
             // OPTIMIZED NOISE FILTER:
             // Rule 1: Ignore very short inputs (under 4 words) UNLESS they start with a valid question trigger OR are a tech keyword
-            // This filters out "Okay yeah", "Right right", "Um uh", background chatter
-            // But ALLOWS "React", "Java", "Docker", "Explain this"
             if (wordCount < 4 && !validQuestionTriggers.test(lowerText) && !validTechKeywords.test(lowerText)) {
                 console.log(`Filtered short noise (No trigger/keyword): "${text}"`);
                 return;
             }
 
             // Rule 2: Strict Hallucination Check
-            if (hallucinations.test(lowerText) || (lowerText.length < 20 && hallucinations.test(lowerText))) {
+            if (hallucinations.some(h => h.test(lowerText))) {
                 console.log(`Filtered Whisper hallucination: "${text}"`);
                 return;
             }
@@ -954,11 +965,14 @@ function setupOpenAIIpcHandlers(sessionRef) {
 
             // Send to OpenAI for response
             await sendMessageToOpenAI(transcription);
+        } else {
+            console.log(`[Audio Processing] Transcription returned empty (Silence or Error). Length: ${transcription ? transcription.length : 0}`);
         }
     }
 
     ipcMain.handle('send-image-content', async (event, { data, prompt, debug, imageQuality }) => {
-        if (!openaiClient && !process.env.GROQ_API_KEY) {
+        const hasGroq = process.env.GROQ_API_KEY || process.env.GROQ_KEYS_70B || process.env.GROQ_KEYS_8B;
+        if (!openaiClient && !hasGroq) {
             return { success: false, error: 'No active session (OpenAI or Groq)' };
         }
 
@@ -1043,8 +1057,29 @@ function setupOpenAIIpcHandlers(sessionRef) {
 
             // MODEL SELECTION: Use env var if set, otherwise fallback to quality-based selection
             const isHighQuality = imageQuality === 'high';
-            const visionModel = process.env.OPENAI_MODEL_VISION || (isHighQuality ? 'gpt-4o' : 'gpt-4o-mini');
+            let visionModel = process.env.OPENAI_MODEL_VISION || (isHighQuality ? 'gpt-4o' : 'gpt-4o-mini');
             const visionDetail = isHighQuality ? 'high' : 'low'; // Keep detail high for better OCR even on mini
+
+            let activeClient = openaiClient;
+
+            // GROQ VISION FALLBACK
+            if (!activeClient && (process.env.GROQ_API_KEY || process.env.GROQ_KEYS_70B || process.env.GROQ_KEYS_8B)) {
+                console.log('⚡ Using Groq for Vision (Llama-3.2-11b-vision-preview)...');
+                const keys = getGroqKeys();
+                const randomKey = keys[Math.floor(Math.random() * keys.length)];
+
+                activeClient = new Groq({
+                    apiKey: randomKey,
+                    dangerouslyAllowBrowser: true,
+                    timeout: 30000
+                });
+
+                visionModel = 'llama-3.2-11b-vision-preview'; // Specific model for Groq Vision
+            }
+
+            if (!activeClient) {
+                return { success: false, error: 'No active AI client for vision.' };
+            }
 
             // Add Exam Instructions for High Quality or Code-focused styles
             let finalPrompt = analysisPrompt;
@@ -1057,7 +1092,7 @@ CRITICAL INSTRUCTIONS:
 4. Do not output markdown code blocks inside other blocks. Keep it clean.`;
             }
 
-            const response = await openaiClient.chat.completions.create({
+            const response = await activeClient.chat.completions.create({
                 model: visionModel,
                 messages: [
                     {
@@ -1105,6 +1140,7 @@ CRITICAL INSTRUCTIONS:
             return { success: false, error: error.message };
         }
     });
+
 
     ipcMain.handle('send-text-message', async (event, text) => {
         // Allow if OpenAI client exists OR if Groq keys are present

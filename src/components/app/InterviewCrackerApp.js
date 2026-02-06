@@ -645,15 +645,20 @@ export class InterviewCrackerApp extends LitElement {
                 console.log('Listening stopped successfully');
             } else {
                 // Start listening
-                console.log('Starting listening...');
+                console.log('🎤 [DEBUG] Start Listening button clicked');
+                console.log('🎤 [DEBUG] window.interviewAI exists:', !!window.interviewAI);
+                console.log('🎤 [DEBUG] window.interviewAI.startCapture exists:', !!(window.interviewAI && window.interviewAI.startCapture));
+
                 if (window.interviewAI && window.interviewAI.startCapture) {
+                    console.log('🎤 [DEBUG] Calling startCapture with:', this.selectedScreenshotInterval, this.selectedImageQuality);
                     await window.interviewAI.startCapture(this.selectedScreenshotInterval, this.selectedImageQuality);
+                    console.log('🎤 [DEBUG] startCapture completed');
                 } else {
-                    console.error('window.interviewAI or startCapture not available');
+                    console.error('❌ window.interviewAI or startCapture not available');
                 }
                 this.isListening = true;
                 this.setStatus('Listening started...');
-                console.log('Listening started successfully');
+                console.log('✅ Listening started successfully');
             }
         } catch (error) {
             console.error('Error toggling listening:', error);
@@ -663,12 +668,17 @@ export class InterviewCrackerApp extends LitElement {
 
     // Main view event handlers
     async handleStart() {
-        // Enforce license check - No free trial allowed
-        if (!this.isActivated) {
-            this.showPaymentAlert = true;
-            this.requestUpdate();
-            return;
-        }
+        console.log('🎤 [DEBUG] handleStart CALLED - isActivated:', this.isActivated);
+
+        // DISABLED: Enforce license check - No free trial allowed
+        // if (!this.isActivated) {
+        //     console.log('❌ [DEBUG] License check FAILED - showing payment alert');
+        //     this.showPaymentAlert = true;
+        //     this.requestUpdate();
+        //     return;
+        // }
+
+        console.log('✅ [DEBUG] License check BYPASSED - proceeding with audio setup...');
 
         // Get device ID for limit checks
         const deviceId = await (async () => {
@@ -686,10 +696,18 @@ export class InterviewCrackerApp extends LitElement {
             return;
         }
 
+        console.log('🎤 [DEBUG] handleStart - window.interviewAI exists:', !!window.interviewAI);
         if (window.interviewAI) {
+            console.log('🎤 [DEBUG] Calling initializeGemini...');
             await window.interviewAI.initializeGemini(this.selectedProfile, this.selectedLanguage);
+            console.log('🎤 [DEBUG] initializeGemini completed');
+
             // Pass the screenshot interval as string (including 'manual' option)
+            console.log('🎤 [DEBUG] About to call startCapture with:', this.selectedScreenshotInterval, this.selectedImageQuality);
             window.interviewAI.startCapture(this.selectedScreenshotInterval, this.selectedImageQuality);
+            console.log('🎤 [DEBUG] startCapture call dispatched');
+        } else {
+            console.error('❌ window.interviewAI not available in handleStart!');
         }
 
         // Track interview start for license limits (only if activated)
