@@ -48,9 +48,11 @@ let manualTranscriptionBuffer = ""; // Buffer for manual mode
 
 function sendToRenderer(channel, data) {
     const windows = BrowserWindow.getAllWindows();
-    if (windows.length > 0) {
-        windows[0].webContents.send(channel, data);
-    }
+    windows.forEach(win => {
+        if (!win.isDestroyed()) {
+            win.webContents.send(channel, data);
+        }
+    });
 }
 
 // Conversation management functions
@@ -58,7 +60,8 @@ function initializeNewSession() {
     currentSessionId = Date.now().toString();
     currentTranscription = '';
     conversationHistory = [];
-    console.log('New conversation session started:', currentSessionId);
+    isGenerating = false; // Force reset generation lock
+    console.log('New conversation session started:', currentSessionId, '| isGenerating reset to false');
 }
 
 function saveConversationTurn(transcription, aiResponse) {
@@ -305,6 +308,7 @@ async function transcribeAudioWithWhisper(audioBuffer) {
                 // console.log(`Transcribing with Groq (distil-whisper)... Key: ${randomKey.substring(0, 10)}...`);
 
                 const groq = new Groq({ apiKey: randomKey, dangerouslyAllowBrowser: true });
+                console.log(`[Groq Whisper] Requesting transcription using Turbo model... Key: ${randomKey.substring(0, 8)}...`);
 
                 const transcription = await groq.audio.transcriptions.create({
                     file: fs.createReadStream(tempFile),
@@ -318,7 +322,8 @@ async function transcribeAudioWithWhisper(audioBuffer) {
                 transcriptionText = transcription.text;
                 console.log('Groq Transcription Success:', transcriptionText);
             } catch (groqError) {
-                console.error('Groq Whisper failed:', groqError.message);
+                console.error(`❌ Groq Whisper FAILED: ${groqError.message}`);
+                console.error(JSON.stringify(groqError, null, 2));
                 // Fallthrough to OpenAI if available
             }
         }
@@ -435,7 +440,8 @@ async function sendMessageToGroq(userMessage) {
 
     // Prevent overlapping requests
     if (isGenerating) {
-        console.log('Skipping message request - already generating response');
+        console.warn('⚠️ Skipping message request - already generating response (isGenerating=true)');
+        sendToRenderer('update-status', 'Busy: Generating response...');
         return;
     }
 
@@ -1101,8 +1107,11 @@ CRITICAL INSTRUCTIONS:
     });
 
     ipcMain.handle('send-text-message', async (event, text) => {
-        if (!openaiClient) {
-            return { success: false, error: 'No active session' };
+        // Allow if OpenAI client exists OR if Groq keys are present
+        const hasGroq = process.env.GROQ_API_KEY || process.env.GROQ_KEYS_70B || process.env.GROQ_KEYS_8B;
+
+        if (!openaiClient && !hasGroq) {
+            return { success: false, error: 'No active session (OpenAI or Groq required)' };
         }
 
         try {
