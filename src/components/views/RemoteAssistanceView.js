@@ -267,7 +267,7 @@ class RemoteAssistanceView extends LitElement {
         this.sessionId = null;
         this.connectedViewers = [];
         this.isEnabled = this.loadSetting('remoteAssistanceEnabled', false);
-        this.signalingServerUrl = this.loadSetting('signalingServerUrl', 'http://localhost:3000');
+        this.signalingServerUrl = this.loadSetting('signalingServerUrl', 'https://remote-support-g88b.onrender.com');
         this.manager = null;
     }
 
@@ -291,7 +291,7 @@ class RemoteAssistanceView extends LitElement {
 
     loadSettings() {
         this.isEnabled = this.loadSetting('remoteAssistanceEnabled', false);
-        this.signalingServerUrl = this.loadSetting('signalingServerUrl', 'http://localhost:3000');
+        this.signalingServerUrl = this.loadSetting('signalingServerUrl', 'https://remote-support-g88b.onrender.com');
     }
 
     toggleEnabled(e) {
@@ -304,14 +304,37 @@ class RemoteAssistanceView extends LitElement {
     }
 
     async startSession() {
+        console.log('RemoteAssistanceView: startSession() called');
+        console.log('RemoteAssistanceView: isEnabled =', this.isEnabled);
+
         if (!this.isEnabled) {
             alert('Please enable Remote Assistance first');
             return;
         }
 
+        console.log('RemoteAssistanceView: Starting dynamic import...');
+
         try {
             // Dynamically import the manager
-            const { default: RemoteAssistanceManager } = await import('../../remote/RemoteAssistanceManager.js');
+            const importedModule = await import('../../remote/RemoteAssistanceManager.js');
+            console.log('RemoteAssistanceView: Imported module:', importedModule);
+
+            let RemoteAssistanceManager = importedModule.default;
+
+            if (typeof RemoteAssistanceManager !== 'function') {
+                console.warn('RemoteAssistanceView: default export is not a constructor, trying module directly or named export');
+                if (typeof importedModule === 'function') {
+                    RemoteAssistanceManager = importedModule;
+                } else if (importedModule.RemoteAssistanceManager) {
+                    RemoteAssistanceManager = importedModule.RemoteAssistanceManager;
+                }
+            }
+
+            console.log('RemoteAssistanceView: Resolved RemoteAssistanceManager:', RemoteAssistanceManager);
+
+            if (typeof RemoteAssistanceManager !== 'function') {
+                throw new Error(`RemoteAssistanceManager is not a constructor (got ${typeof RemoteAssistanceManager})`);
+            }
 
             this.manager = new RemoteAssistanceManager(this.signalingServerUrl);
 
@@ -352,7 +375,9 @@ class RemoteAssistanceView extends LitElement {
 
         } catch (error) {
             console.error('Error starting session:', error);
-            this.showNotification(`Failed to start session: ${error.message}`, 'error');
+            const errorMessage = `Failed to start session: ${error.message}\n\nCheck your internet connection and ensure the signaling server is running.`;
+            this.showNotification(errorMessage, 'error');
+            alert(errorMessage); // Force show error to user
         }
     }
 
@@ -510,7 +535,7 @@ class RemoteAssistanceView extends LitElement {
                 <input 
                     type="text" 
                     readonly 
-                    value="${window.location.origin}/viewer/index.html"
+                    value="https://interviewaii.github.io/remote-support/viewer/index.html"
                     style="width: 100%; padding: 12px; border: 1px solid #e2e8f0; border-radius: 8px; font-family: monospace;"
                     @click="${(e) => e.target.select()}"
                 />

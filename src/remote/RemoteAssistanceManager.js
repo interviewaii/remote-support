@@ -22,6 +22,12 @@ class RemoteAssistanceManager {
         this.onViewerLeft = null;
         this.onDisconnected = null;
         this.onError = null;
+
+        // Validate dependencies
+        console.log('RemoteAssistanceManager: Checking dependencies...');
+        console.log('RemoteAssistanceManager: io available?', typeof io);
+        console.log('RemoteAssistanceManager: Peer available?', typeof Peer);
+        console.log('RemoteAssistanceManager: ipcRenderer available?', typeof ipcRenderer);
     }
 
     /**
@@ -29,25 +35,40 @@ class RemoteAssistanceManager {
      * @returns {Promise<string>} Session ID
      */
     async startSession() {
+        console.log('RemoteAssistanceManager: Starting session initialization...');
+        console.log(`RemoteAssistanceManager: Using signaling server: ${this.signalingServerUrl}`);
+
         try {
             // Create session on signaling server
+            console.log('RemoteAssistanceManager: Fetching session creation API...');
             const response = await fetch(`${this.signalingServerUrl}/api/session/create`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' }
             });
 
+            console.log(`RemoteAssistanceManager: Server response status: ${response.status}`);
+
             if (!response.ok) {
-                throw new Error('Failed to create session');
+                const errorText = await response.text();
+                console.error(`RemoteAssistanceManager: Server error response: ${errorText}`);
+                throw new Error(`Failed to create session: ${response.status} ${response.statusText}`);
             }
 
-            const { sessionId, expiresIn } = await response.json();
+            const data = await response.json();
+            console.log('RemoteAssistanceManager: Session data received:', data);
+
+            const { sessionId, expiresIn } = data;
             this.sessionId = sessionId;
 
             // Connect to signaling server via WebSocket
+            console.log('RemoteAssistanceManager: Connecting to WebSocket...');
             await this.connectToSignalingServer();
+            console.log('RemoteAssistanceManager: WebSocket connected');
 
             // Capture screen stream
+            console.log('RemoteAssistanceManager: Starting screen capture...');
             await this.startScreenCapture();
+            console.log('RemoteAssistanceManager: Screen capture started');
 
             this.isActive = true;
 
@@ -55,7 +76,7 @@ class RemoteAssistanceManager {
                 this.onSessionCreated({ sessionId, expiresIn });
             }
 
-            console.log(`Remote assistance session started: ${sessionId}`);
+            console.log(`RemoteAssistanceManager: Session FULLY started: ${sessionId}`);
             return sessionId;
 
         } catch (error) {
@@ -72,77 +93,124 @@ class RemoteAssistanceManager {
      */
     async connectToSignalingServer() {
         return new Promise((resolve, reject) => {
-            this.socket = io(this.signalingServerUrl, {
-                transports: ['websocket'],
-                reconnection: true,
-                reconnectionAttempts: 5,
-                reconnectionDelay: 1000
-            });
+            console.log('RemoteAssistanceManager: Attempting WebSocket connection...');
+            console.log('RemoteAssistanceManager: Server URL:', this.signalingServerUrl);
 
-            this.socket.on('connect', () => {
-                console.log('Connected to signaling server');
-
-                // Join as sender
-                this.socket.emit('join-as-sender', { sessionId: this.sessionId });
-            });
-
-            this.socket.on('joined-as-sender', () => {
-                console.log('Joined session as sender');
-                resolve();
-            });
-
-            this.socket.on('viewer-joined', ({ viewerId, viewerName, timestamp }) => {
-                console.log(`Viewer joined: ${viewerName} (${viewerId})`);
-                this.connectedViewers.push({ viewerId, viewerName, timestamp });
-
-                // Initiate WebRTC connection with the new viewer
-                this.createPeerConnection(viewerId);
-
-                if (this.onViewerJoined) {
-                    this.onViewerJoined({ viewerId, viewerName, timestamp });
+            // Set a timeout for the connection (60 seconds for Render cold start)
+            const connectionTimeout = setTimeout(() => {
+                console.error('RemoteAssistanceManager: Connection timeout after 60 seconds');
+                if (this.socket) {
+                    console.log('RemoteAssistanceManager: Disconnecting socket due to timeout');
+                    this.socket.disconnect();
                 }
-            });
+                reject(new Error('Connection timeout - Server may be waking up (Render free tier). Please try again in 30 seconds.'));
+            }, 60000); // 60 seconds
 
-            this.socket.on('viewer-left', ({ viewerId, viewerName }) => {
-                console.log(`Viewer left: ${viewerName}`);
-                this.connectedViewers = this.connectedViewers.filter(v => v.viewerId !== viewerId);
+            try {
+                this.socket = io(this.signalingServerUrl, {
+                    transports: ['websocket', 'polling'], // Try both transports
+                    reconnection: true,
+                    reconnectionAttempts: 5,
+                    reconnectionDelay: 1000,
+                    timeout: 60000, // 60 second timeout
+                    forceNew: true,
+                    autoConnect: true
+                });
 
-                if (this.onViewerLeft) {
-                    this.onViewerLeft({ viewerId, viewerName });
-                }
-            });
+                console.log('RemoteAssistanceManager: Socket.IO client created');
 
-            this.socket.on('answer', ({ answer, from }) => {
-                if (this.peer) {
-                    this.peer.signal(answer);
-                }
-            });
+                this.socket.on('connect', () => {
+                    console.log('RemoteAssistanceManager: Socket connected! Socket ID:', this.socket.id);
+                    clearTimeout(connectionTimeout);
 
-            this.socket.on('ice-candidate', ({ candidate, from }) => {
-                if (this.peer) {
-                    this.peer.signal(candidate);
-                }
-            });
+                    // Join as sender
+                    console.log('RemoteAssistanceManager: Emitting join-as-sender with sessionId:', this.sessionId);
+                    this.socket.emit('join-as-sender', { sessionId: this.sessionId });
+                });
 
-            this.socket.on('control-event', ({ event, from }) => {
-                // Handle remote control events (mouse, keyboard)
-                this.handleControlEvent(event);
-            });
+                this.socket.on('joined-as-sender', () => {
+                    console.log('RemoteAssistanceManager: Successfully joined as sender');
+                    clearTimeout(connectionTimeout);
+                    resolve();
+                });
 
-            this.socket.on('session-expired', () => {
-                console.log('Session expired');
-                this.stopSession();
-            });
+                this.socket.on('connect_error', (error) => {
+                    console.error('RemoteAssistanceManager: Connection error:', error);
+                    console.error('RemoteAssistanceManager: Error message:', error.message);
+                    console.error('RemoteAssistanceManager: Error type:', error.type);
+                    clearTimeout(connectionTimeout);
+                    reject(new Error(`Connection failed: ${error.message}`));
+                });
 
-            this.socket.on('error', (error) => {
-                console.error('Socket error:', error);
+                this.socket.on('connect_timeout', () => {
+                    console.error('RemoteAssistanceManager: Connection timeout event fired');
+                    clearTimeout(connectionTimeout);
+                    reject(new Error('Connection timeout'));
+                });
+
+                this.socket.on('error', (error) => {
+                    console.error('RemoteAssistanceManager: Socket error:', error);
+                    clearTimeout(connectionTimeout);
+                    reject(error);
+                });
+
+                this.socket.on('viewer-joined', ({ viewerId, viewerName, timestamp }) => {
+                    console.log(`Viewer joined: ${viewerName} (${viewerId})`);
+                    this.connectedViewers.push({ viewerId, viewerName, timestamp });
+
+                    // Initiate WebRTC connection with the new viewer
+                    this.createPeerConnection(viewerId);
+
+                    if (this.onViewerJoined) {
+                        this.onViewerJoined({ viewerId, viewerName, timestamp });
+                    }
+                });
+
+                this.socket.on('viewer-left', ({ viewerId, viewerName }) => {
+                    console.log(`Viewer left: ${viewerName}`);
+                    this.connectedViewers = this.connectedViewers.filter(v => v.viewerId !== viewerId);
+
+                    if (this.onViewerLeft) {
+                        this.onViewerLeft({ viewerId, viewerName });
+                    }
+                });
+
+                this.socket.on('answer', ({ answer, from }) => {
+                    if (this.peer) {
+                        this.peer.signal(answer);
+                    }
+                });
+
+                this.socket.on('ice-candidate', ({ candidate, from }) => {
+                    if (this.peer) {
+                        this.peer.signal(candidate);
+                    }
+                });
+
+                this.socket.on('control-event', ({ event, from }) => {
+                    // Handle remote control events (mouse, keyboard)
+                    this.handleControlEvent(event);
+                });
+
+                this.socket.on('session-expired', () => {
+                    console.log('Session expired');
+                    this.stopSession();
+                });
+
+                this.socket.on('error', (error) => {
+                    console.error('Socket error:', error);
+                    reject(error);
+                });
+
+                this.socket.on('disconnect', () => {
+                    console.log('Disconnected from signaling server');
+                    this.stopSession();
+                });
+            } catch (error) {
+                console.error('RemoteAssistanceManager: Error creating socket:', error);
+                clearTimeout(connectionTimeout);
                 reject(error);
-            });
-
-            this.socket.on('disconnect', () => {
-                console.log('Disconnected from signaling server');
-                this.stopSession();
-            });
+            }
         });
     }
 
@@ -290,4 +358,4 @@ class RemoteAssistanceManager {
     }
 }
 
-module.exports = RemoteAssistanceManager;
+export default RemoteAssistanceManager;

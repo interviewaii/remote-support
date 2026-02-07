@@ -36,7 +36,7 @@
     "openai": "^6.17.0",
     "pdf-parse": "^1.1.1",
     "simple-peer": "^9.11.1",
-    "socket.io-client": "^4.6.1",
+    "socket.io-client": "^4.8.3",
     "tesseract.js": "^5.1.1"
   },
   "devDependencies": {
