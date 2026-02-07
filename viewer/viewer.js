@@ -5,7 +5,7 @@
 
 // ⚠️ IMPORTANT: Update this URL after deploying your signaling server to Render.com
 // Example: https://remote-support-signaling.onrender.com
-const SIGNALING_SERVER_URL = 'http://localhost:3000'; // Change this after deployment
+const SIGNALING_SERVER_URL = 'https://remote-support-g88b.onrender.com'; // Production URL
 
 
 class RemoteViewer {

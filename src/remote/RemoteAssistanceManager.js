@@ -7,7 +7,7 @@ const Peer = require('simple-peer');
  * Allows a helper to view and control this computer after receiving a session ID
  */
 class RemoteAssistanceManager {
-    constructor(signalingServerUrl = 'http://localhost:3000') {
+    constructor(signalingServerUrl = 'https://remote-support-g88b.onrender.com') {
         this.signalingServerUrl = signalingServerUrl;
         this.socket = null;
         this.peer = null;
