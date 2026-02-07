@@ -1,5 +1,6 @@
 import { html, css, LitElement } from '../../assets/lit-core-2.7.4.min.js';
 import { resizeLayout } from '../../utils/windowResize.js';
+import './RemoteAssistanceView.js';
 
 export class CustomizeView extends LitElement {
     static styles = css`
@@ -410,20 +411,44 @@ export class CustomizeView extends LitElement {
 
         .settings-tabs {
             display: flex;
-            gap: 12px;
+            gap: 8px;
             margin-bottom: 18px;
-            justify-content: center;
+            justify-content: flex-start;
+            overflow-x: auto;
+            overflow-y: hidden;
+            padding-bottom: 8px;
+            /* Smooth horizontal scrolling */
+            scroll-behavior: smooth;
+            -webkit-overflow-scrolling: touch;
         }
+        
+        /* Hide scrollbar for cleaner look */
+        .settings-tabs::-webkit-scrollbar {
+            height: 4px;
+        }
+        .settings-tabs::-webkit-scrollbar-track {
+            background: transparent;
+        }
+        .settings-tabs::-webkit-scrollbar-thumb {
+            background: var(--scrollbar-thumb, rgba(255, 255, 255, 0.2));
+            border-radius: 4px;
+        }
+        .settings-tabs::-webkit-scrollbar-thumb:hover {
+            background: var(--scrollbar-thumb-hover, rgba(255, 255, 255, 0.3));
+        }
+        
         .tab-btn {
-            background: var(--button-background, rgba(255, 255, 255, 0.08)); /* Use theme variable with fallback */
-            color: var(--text-color, #ffffff); /* Use theme variable with fallback */
-            border: 1.5px solid var(--card-border, rgba(255, 255, 255, 0.2)); /* Use theme variable with fallback */
+            background: var(--button-background, rgba(255, 255, 255, 0.08));
+            color: var(--text-color, #ffffff);
+            border: 1.5px solid var(--card-border, rgba(255, 255, 255, 0.2));
             border-radius: 18px 18px 0 0;
             font-weight: 600;
-            font-size: 15px;
-            padding: 10px 22px;
+            font-size: 14px;
+            padding: 10px 18px;
             cursor: default;
             transition: all 0.2s ease;
+            white-space: nowrap;
+            flex-shrink: 0;
         }
         .tab-btn.active, .tab-btn:hover {
             background: var(--button-hover-background, rgba(255, 255, 255, 0.15)); /* Use theme variable with fallback */
@@ -1331,6 +1356,9 @@ export class CustomizeView extends LitElement {
                 <button class="tab-btn ${this.activeTab === 'advanced' ? 'active' : ''}" @click=${() => this.setTab('advanced')}>
                     <span>⚙️</span> Advanced
                 </button>
+                <button class="tab-btn ${this.activeTab === 'remote' ? 'active' : ''}" @click=${() => this.setTab('remote')}>
+                    <span>🔗</span> Remote
+                </button>
             </div>
             <div class="settings-tab-content">
                 ${this.activeTab === 'profile' ? html`
@@ -1554,6 +1582,9 @@ export class CustomizeView extends LitElement {
                             </div>
                         </div>
                     </div>
+                ` : ''}
+                ${this.activeTab === 'remote' ? html`
+                    <remote-assistance-view></remote-assistance-view>
                 ` : ''}
             </div>
         `;

@@ -3,7 +3,7 @@ if (require('electron-squirrel-startup')) {
 }
 
 const path = require('node:path');
-const { app, BrowserWindow, shell, ipcMain } = require('electron');
+const { app, BrowserWindow, shell, ipcMain, desktopCapturer } = require('electron');
 
 const envPath = app.isPackaged
     ? path.join(process.resourcesPath, '.env')
@@ -11,6 +11,7 @@ const envPath = app.isPackaged
 require('dotenv').config({ path: envPath });
 const { createWindow, updateGlobalShortcuts } = require('./utils/window');
 const { setupOpenAIIpcHandlers, stopMacOSAudioCapture, sendToRenderer, triggerManualAnswer, setManualMode } = require('./utils/openai');
+const { getInputSimulator } = require('./remote/InputSimulator');
 
 const openaiSessionRef = {
     current: null,
@@ -31,6 +32,7 @@ app.whenReady().then(() => {
     createMainWindow();
     setupGeneralIpcHandlers(); // Register general handlers FIRST
     setupOpenAIIpcHandlers(openaiSessionRef);
+    setupRemoteAssistanceHandlers(); // Setup remote assistance
 });
 
 app.on('window-all-closed', () => {
@@ -106,3 +108,31 @@ function setupGeneralIpcHandlers() {
         }
     });
 }
+
+function setupRemoteAssistanceHandlers() {
+    // Initialize input simulator
+    const inputSimulator = getInputSimulator();
+    inputSimulator.registerIpcHandlers(ipcMain);
+
+    // Handle screen source requests for screen capture
+    ipcMain.handle('get-screen-sources', async () => {
+        try {
+            const sources = await desktopCapturer.getSources({
+                types: ['screen'],
+                thumbnailSize: { width: 150, height: 150 }
+            });
+
+            return sources.map(source => ({
+                id: source.id,
+                name: source.name,
+                thumbnail: source.thumbnail.toDataURL()
+            }));
+        } catch (error) {
+            console.error('Error getting screen sources:', error);
+            return [];
+        }
+    });
+
+    console.log('Remote assistance handlers initialized');
+}
+
