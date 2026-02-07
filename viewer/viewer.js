@@ -87,29 +87,52 @@ class RemoteViewer {
 
     connectToSignalingServer() {
         return new Promise((resolve, reject) => {
+            console.log('Viewer: Connecting to signaling server:', SIGNALING_SERVER_URL);
+
+            const connectionTimeout = setTimeout(() => {
+                if (!this.isConnected) {
+                    console.error('Viewer: Connection timeout after 60 seconds');
+                    if (this.socket) {
+                        this.socket.disconnect();
+                    }
+                    reject(new Error('Connection timeout - Server may be waking up. Please try again in 30 seconds.'));
+                }
+            }, 60000); // 60 seconds to match the app
+
             this.socket = io(SIGNALING_SERVER_URL, {
-                transports: ['websocket'],
-                reconnection: false
+                transports: ['websocket', 'polling'], // Try both transports
+                reconnection: true,
+                reconnectionAttempts: 5,
+                reconnectionDelay: 1000,
+                timeout: 60000 // 60 second timeout
             });
 
+            console.log('Viewer: Socket.IO client created');
+
             this.socket.on('connect', () => {
-                console.log('Connected to signaling server');
+                console.log('Viewer: Connected to signaling server! Socket ID:', this.socket.id);
+                clearTimeout(connectionTimeout);
 
                 // Join session as viewer
+                const viewerName = prompt('Enter your name (optional):') || 'Anonymous Viewer';
+                console.log('Viewer: Joining session', this.sessionId, 'as', viewerName);
+
                 this.socket.emit('join-as-viewer', {
                     sessionId: this.sessionId,
-                    viewerName: prompt('Enter your name (optional):') || 'Anonymous Viewer'
+                    viewerName: viewerName
                 });
             });
 
             this.socket.on('joined-as-viewer', () => {
-                console.log('Joined session as viewer');
+                console.log('Viewer: Successfully joined session as viewer');
                 this.statusText.textContent = `Connected to session: ${this.sessionId}`;
+                this.isConnected = true;
+                clearTimeout(connectionTimeout);
                 resolve();
             });
 
             this.socket.on('offer', ({ offer, from }) => {
-                console.log('Received WebRTC offer');
+                console.log('Viewer: Received WebRTC offer from', from);
                 this.handleOffer(offer, from);
             });
 
@@ -130,23 +153,23 @@ class RemoteViewer {
             });
 
             this.socket.on('error', (error) => {
-                console.error('Socket error:', error);
+                console.error('Viewer: Socket error:', error);
+                clearTimeout(connectionTimeout);
                 reject(new Error(error.message || 'Connection failed'));
             });
 
+            this.socket.on('connect_error', (error) => {
+                console.error('Viewer: Connection error:', error);
+                clearTimeout(connectionTimeout);
+                reject(new Error(`Connection failed: ${error.message}`));
+            });
+
             this.socket.on('disconnect', () => {
-                console.log('Disconnected from signaling server');
+                console.log('Viewer: Disconnected from signaling server');
                 if (this.isConnected) {
                     this.disconnect();
                 }
             });
-
-            // Timeout if connection takes too long
-            setTimeout(() => {
-                if (!this.isConnected) {
-                    reject(new Error('Connection timeout'));
-                }
-            }, 10000);
         });
     }
 
