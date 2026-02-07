@@ -304,6 +304,101 @@ class RemoteViewer {
         video.addEventListener('contextmenu', (e) => {
             e.preventDefault();
         });
+
+        // --- Touch Support for Mobile (AnyDesk-like) ---
+
+        let lastTouchX = 0;
+        let lastTouchY = 0;
+
+        video.addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            if (e.touches.length === 1) {
+                const touch = e.touches[0];
+                const rect = video.getBoundingClientRect();
+                lastTouchX = touch.clientX;
+                lastTouchY = touch.clientY;
+
+                // Move mouse to touch position
+                const x = (touch.clientX - rect.left) / rect.width;
+                const y = (touch.clientY - rect.top) / rect.height;
+
+                this.sendControlEvent({ type: 'mousemove', x, y });
+                this.sendControlEvent({ type: 'mousedown', button: 'left' });
+            }
+        }, { passive: false });
+
+        video.addEventListener('touchmove', (e) => {
+            e.preventDefault();
+            if (e.touches.length === 1) {
+                const touch = e.touches[0];
+                const rect = video.getBoundingClientRect();
+
+                const x = (touch.clientX - rect.left) / rect.width;
+                const y = (touch.clientY - rect.top) / rect.height;
+
+                this.sendControlEvent({ type: 'mousemove', x, y });
+
+                lastTouchX = touch.clientX;
+                lastTouchY = touch.clientY;
+            }
+        }, { passive: false });
+
+        video.addEventListener('touchend', (e) => {
+            e.preventDefault();
+            this.sendControlEvent({ type: 'mouseup', button: 'left' });
+        }, { passive: false });
+
+        // --- Mobile Keyboard Support ---
+
+        // Create a hidden input to capture mobile keyboard
+        const mobileInput = document.createElement('input');
+        mobileInput.style.position = 'fixed'; // Fix to top to avoid scrolling
+        mobileInput.style.opacity = '0';
+        mobileInput.style.top = '-1000px';
+        document.body.appendChild(mobileInput);
+
+        // create a toggle button for keyboard
+        const kbdBtn = document.createElement('button');
+        kbdBtn.innerText = '⌨️ Keyboard';
+        kbdBtn.style.position = 'fixed';
+        kbdBtn.style.bottom = '20px';
+        kbdBtn.style.right = '20px';
+        kbdBtn.style.zIndex = '1000';
+        kbdBtn.style.padding = '10px 20px';
+        kbdBtn.style.borderRadius = '20px';
+        kbdBtn.style.backgroundColor = '#007bff';
+        kbdBtn.style.color = 'white';
+        kbdBtn.style.border = 'none';
+        kbdBtn.style.boxShadow = '0 2px 5px rgba(0,0,0,0.2)';
+        kbdBtn.style.cursor = 'pointer';
+        // Only show on touch devices or small screens
+        if ('ontouchstart' in window || window.innerWidth < 800) {
+            document.body.appendChild(kbdBtn);
+        }
+
+        kbdBtn.addEventListener('click', () => {
+            mobileInput.focus();
+            mobileInput.click();
+        });
+
+        mobileInput.addEventListener('input', (e) => {
+            if (e.data) {
+                // Send char flow
+                // For simplified typing on mobile, we might just send the keypress equivalent
+                // logic can be complex for full keyboard, but let's try sending the char
+                const char = e.data;
+                this.sendControlEvent({ type: 'keypress', key: char });
+            }
+            mobileInput.value = ''; // keep empty
+        });
+
+        // Handle special keys like backspace via keydown on input
+        mobileInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Backspace' || e.key === 'Enter') {
+                this.sendControlEvent({ type: 'keydown', key: e.key });
+                this.sendControlEvent({ type: 'keyup', key: e.key });
+            }
+        });
     }
 
     sendControlEvent(event) {

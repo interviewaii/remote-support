@@ -45,6 +45,15 @@ class InputSimulator {
                 console.warn('robotjs not available:', error.message);
             }
 
+            // Fallback: Use Windows PowerShell (Windows only)
+            if (process.platform === 'win32') {
+                const { WindowsInputSimulator } = require('./WindowsInputSimulator');
+                this.windowsSim = new WindowsInputSimulator();
+                console.log('Initialized Windows PowerShell input simulator');
+                this.isInitialized = true;
+                return;
+            }
+
             console.error('No input simulation library available. Remote control will not work.');
             this.isInitialized = false;
 
@@ -148,6 +157,8 @@ class InputSimulator {
             await this.nutjs.mouse.setPosition({ x: screenX, y: screenY });
         } else if (this.robotjs) {
             this.robotjs.moveMouse(screenX, screenY);
+        } else if (this.windowsSim) {
+            await this.windowsSim.simulateMouseMove(x, y);
         }
     }
 
@@ -174,6 +185,8 @@ class InputSimulator {
         } else if (this.robotjs) {
             const state = down ? 'down' : 'up';
             this.robotjs.mouseToggle(state, button);
+        } else if (this.windowsSim) {
+            await this.windowsSim.simulateMouseClick(button, down);
         }
     }
 
@@ -238,6 +251,11 @@ class InputSimulator {
     async simulateKeyPress(key) {
         await this.simulateKey(key, true);
         await this.simulateKey(key, false);
+
+        // Fallback for windowsSim
+        if (this.windowsSim && !this.nutjs && !this.robotjs) {
+            await this.windowsSim.simulateKeyPress(key);
+        }
     }
 
     /**
