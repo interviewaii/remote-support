@@ -1,119 +1,112 @@
 const { screen } = require('electron');
-const { exec } = require('child_process');
-const util = require('util');
-const execPromise = util.promisify(exec);
+const { spawn } = require('child_process');
+const path = require('path');
 
 /**
- * Ultra-Simple Input Simulator using Python for all input simulation
- * Base64 encodes JSON to avoid PowerShell quote escaping issues
+ * Fast Input Simulator using persistent Python process
+ * Keeps one Python process running to avoid spawning overhead and crashes
  */
-class UltraSimpleInputSimulator {
+class FastInputSimulator {
     constructor() {
         this.platform = process.platform;
         this.isWindows = this.platform === 'win32';
         this.isInitialized = false;
+        this.pythonProcess = null;
 
-        console.log('Initializing UltraSimpleInputSimulator...');
+        console.log('Initializing FastInputSimulator...');
     }
 
     async initialize() {
+        if (!this.isWindows) {
+            console.warn('FastInputSimulator only works on Windows');
+            return;
+        }
+
         try {
-            if (this.isWindows) {
-                console.log('UltraSimpleInputSimulator: Initialized (using Python for all input)');
-                this.isInitialized = true;
-            } else {
-                console.warn('UltraSimpleInputSimulator only works on Windows');
+            // Start persistent Python process
+            const pythonScript = path.join(__dirname, 'python_input_persistent.py');
+            this.pythonProcess = spawn('python', [pythonScript]);
+
+            this.pythonProcess.stderr.on('data', (data) => {
+                console.log('Python:', data.toString().trim());
+            });
+
+            this.pythonProcess.on('error', (error) => {
+                console.error('Python process error:', error);
                 this.isInitialized = false;
-            }
+            });
+
+            this.pythonProcess.on('exit', (code) => {
+                console.log('Python process exited with code:', code);
+                this.isInitialized = false;
+            });
+
+            // Wait a bit for process to start
+            await new Promise(resolve => setTimeout(resolve, 500));
+
+            this.isInitialized = true;
+            console.log('FastInputSimulator: Initialized with persistent Python process');
         } catch (error) {
-            console.error('UltraSimpleInputSimulator: Initialization failed:', error.message);
+            console.error('FastInputSimulator: Initialization failed:', error.message);
             this.isInitialized = false;
         }
     }
 
     /**
-     * Simulate mouse movement using Python script
+     * Send event to persistent Python process
+     */
+    async sendEvent(event) {
+        if (!this.isInitialized || !this.pythonProcess) {
+            return;
+        }
+
+        try {
+            // Base64 encode JSON
+            const eventJson = JSON.stringify(event);
+            const base64Event = Buffer.from(eventJson).toString('base64');
+
+            // Send to Python process via stdin
+            this.pythonProcess.stdin.write(base64Event + '\n');
+        } catch (error) {
+            console.error('Error sending event:', error.message);
+        }
+    }
+
+    /**
+     * Simulate mouse movement
      */
     async simulateMouseMove(x, y) {
-        if (!this.isWindows) return;
-
-        try {
-            const path = require('path');
-            const pythonScript = path.join(__dirname, 'python_input.py');
-
-            const event = {
-                type: 'mousemove',
-                x: x,
-                y: y
-            };
-
-            // Base64 encode to avoid PowerShell quote escaping issues
-            const eventJson = JSON.stringify(event);
-            const base64Event = Buffer.from(eventJson).toString('base64');
-            await execPromise(`python "${pythonScript}" "${base64Event}"`);
-        } catch (error) {
-            // Silently ignore mouse move errors
-        }
+        await this.sendEvent({
+            type: 'mousemove',
+            x: x,
+            y: y
+        });
     }
 
     /**
-     * Simulate mouse click using Python script
+     * Simulate mouse click
      */
     async simulateMouseClick(button, down) {
-        if (!this.isWindows) return;
-
-        try {
-            const path = require('path');
-            const pythonScript = path.join(__dirname, 'python_input.py');
-
-            const event = {
-                type: down ? 'mousedown' : 'mouseup',
-                button: button || 'left'
-            };
-
-            // Base64 encode to avoid PowerShell quote escaping issues
-            const eventJson = JSON.stringify(event);
-            const base64Event = Buffer.from(eventJson).toString('base64');
-            await execPromise(`python "${pythonScript}" "${base64Event}"`);
-        } catch (error) {
-            console.error('❌ Click error:', error.message);
-        }
+        await this.sendEvent({
+            type: down ? 'mousedown' : 'mouseup',
+            button: button || 'left'
+        });
     }
 
     /**
-     * Simulate keyboard key press using Python script
+     * Simulate keyboard key press
      */
     async simulateKeyPress(key) {
-        if (!this.isWindows) return;
-
-        try {
-            console.log('⌨️ Simulating key press:', key);
-
-            const path = require('path');
-            const pythonScript = path.join(__dirname, 'python_input.py');
-
-            const event = {
-                type: 'keypress',
-                key: key
-            };
-
-            // Base64 encode to avoid PowerShell quote escaping issues
-            const eventJson = JSON.stringify(event);
-            const base64Event = Buffer.from(eventJson).toString('base64');
-            await execPromise(`python "${pythonScript}" "${base64Event}"`);
-
-            console.log('✅ Key sent:', key);
-        } catch (error) {
-            console.error('❌ Key error:', error.message);
-        }
+        await this.sendEvent({
+            type: 'keypress',
+            key: key
+        });
     }
 
     /**
      * Simulate input event
      */
     async simulateEvent(event) {
-        console.log('🎯 simulateEvent called:', event.type, 'initialized:', this.isInitialized);
-
         if (!this.isInitialized) {
             console.warn('⚠️ Simulator not initialized!');
             return;
@@ -126,17 +119,14 @@ class UltraSimpleInputSimulator {
                     break;
 
                 case 'mousedown':
-                    console.log('🖱️ Mouse down detected');
                     await this.simulateMouseClick(event.button || 'left', true);
                     break;
 
                 case 'mouseup':
-                    console.log('🖱️ Mouse up detected');
                     await this.simulateMouseClick(event.button || 'left', false);
                     break;
 
                 case 'click':
-                    console.log('🖱️ Click detected');
                     await this.simulateMouseClick(event.button || 'left', true);
                     await new Promise(resolve => setTimeout(resolve, 50));
                     await this.simulateMouseClick(event.button || 'left', false);
@@ -144,12 +134,7 @@ class UltraSimpleInputSimulator {
 
                 case 'keypress':
                 case 'keydown':
-                    console.log('⌨️ Keyboard event detected, key:', event.key);
                     await this.simulateKeyPress(event.key);
-                    break;
-
-                default:
-                    console.log('❓ Unknown event type:', event.type);
                     break;
             }
         } catch (error) {
@@ -162,10 +147,19 @@ class UltraSimpleInputSimulator {
      */
     registerIpcHandlers(ipcMain) {
         ipcMain.on('simulate-input', (event, inputEvent) => {
-            console.log('🎮 IPC RECEIVED simulate-input event:', inputEvent.type, inputEvent);
             this.simulateEvent(inputEvent);
         });
-        console.log('UltraSimpleInputSimulator: IPC handlers registered');
+        console.log('FastInputSimulator: IPC handlers registered');
+    }
+
+    /**
+     * Cleanup - kill Python process
+     */
+    cleanup() {
+        if (this.pythonProcess) {
+            this.pythonProcess.kill();
+            this.pythonProcess = null;
+        }
     }
 }
 
@@ -177,10 +171,10 @@ let inputSimulatorInstance = null;
  */
 function getInputSimulator() {
     if (!inputSimulatorInstance) {
-        inputSimulatorInstance = new UltraSimpleInputSimulator();
+        inputSimulatorInstance = new FastInputSimulator();
         inputSimulatorInstance.initialize();
     }
     return inputSimulatorInstance;
 }
 
-module.exports = { UltraSimpleInputSimulator, getInputSimulator };
+module.exports = { FastInputSimulator, getInputSimulator };

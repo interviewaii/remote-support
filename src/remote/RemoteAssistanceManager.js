@@ -16,6 +16,10 @@ class RemoteAssistanceManager {
         this.stream = null;
         this.connectedViewers = [];
 
+        // Screen capture mode: 'window' (privacy - only app window) or 'screen' (full screen)
+        this.captureMode = 'screen'; // Default to full screen - helper sees entire desktop
+        this.currentSource = null;
+
         // Callbacks for UI updates
         this.onSessionCreated = null;
         this.onViewerJoined = null;
@@ -69,6 +73,7 @@ class RemoteAssistanceManager {
             console.log('RemoteAssistanceManager: Starting screen capture...');
             await this.startScreenCapture();
             console.log('RemoteAssistanceManager: Screen capture started');
+            console.log('IMPORTANT: Keep window visible for capture to work!');
 
             this.isActive = true;
 
@@ -193,6 +198,14 @@ class RemoteAssistanceManager {
                     this.handleControlEvent(event);
                 });
 
+                // Handle capture mode switch requests from viewer
+                this.socket.on('switch-capture-mode', ({ mode }) => {
+                    console.log('RemoteAssistanceManager: Received mode switch request:', mode);
+                    this.switchCaptureMode(mode).catch(error => {
+                        console.error('Failed to switch capture mode:', error);
+                    });
+                });
+
                 this.socket.on('session-expired', () => {
                     console.log('Session expired');
                     this.stopSession();
@@ -216,19 +229,41 @@ class RemoteAssistanceManager {
     }
 
     /**
-     * Start capturing the screen
+     * Start capturing the screen (or window based on mode)
+     * @param {string} mode - 'window' or 'screen'
      */
-    async startScreenCapture() {
+    async startScreenCapture(mode = this.captureMode) {
         try {
-            // Request screen capture via IPC
-            const sources = await ipcRenderer.invoke('get-screen-sources');
+            let source;
 
-            if (!sources || sources.length === 0) {
-                throw new Error('No screen sources available');
+            if (mode === 'window') {
+                // Get app window source for privacy mode
+                console.log('Starting window-only capture (privacy mode)...');
+                source = await ipcRenderer.invoke('get-app-window-source');
+
+                if (!source) {
+                    console.warn('App window not found, falling back to screen capture');
+                    mode = 'screen'; // Fallback to screen
+                }
             }
 
-            // Use the first screen (primary display)
-            const primarySource = sources[0];
+            if (mode === 'screen' || !source) {
+                // Get screen sources for full screen mode
+                console.log('Starting full screen capture...');
+                const sources = await ipcRenderer.invoke('get-screen-sources');
+
+                if (!sources || sources.length === 0) {
+                    throw new Error('No screen sources available');
+                }
+
+                // Use the first screen (primary display)
+                source = sources.find(s => s.type === 'screen') || sources[0];
+            }
+
+            this.currentSource = source;
+            this.captureMode = mode;
+
+            console.log(`Capturing in ${mode} mode:`, source.name);
 
             // Get media stream
             this.stream = await navigator.mediaDevices.getUserMedia({
@@ -236,7 +271,7 @@ class RemoteAssistanceManager {
                 video: {
                     mandatory: {
                         chromeMediaSource: 'desktop',
-                        chromeMediaSourceId: primarySource.id,
+                        chromeMediaSourceId: source.id,
                         minWidth: 1280,
                         maxWidth: 1920,
                         minHeight: 720,
@@ -246,10 +281,66 @@ class RemoteAssistanceManager {
                 }
             });
 
-            console.log('Screen capture started');
+            console.log(`Screen capture started in ${mode} mode`);
 
         } catch (error) {
             console.error('Error capturing screen:', error);
+            throw error;
+        }
+    }
+
+    /**
+     * Switch capture mode between window and screen
+     * @param {string} newMode - 'window' or 'screen'
+     */
+    async switchCaptureMode(newMode) {
+        if (newMode !== 'window' && newMode !== 'screen') {
+            console.error('Invalid capture mode:', newMode);
+            return;
+        }
+
+        if (newMode === this.captureMode) {
+            console.log('Already in', newMode, 'mode');
+            return;
+        }
+
+        console.log(`Switching capture mode from ${this.captureMode} to ${newMode}...`);
+
+        try {
+            // Stop current stream
+            if (this.stream) {
+                this.stream.getTracks().forEach(track => track.stop());
+                this.stream = null;
+            }
+
+            // Start capture with new mode
+            await this.startScreenCapture(newMode);
+
+            // Update all peer connections with new stream
+            if (this.peer && this.stream) {
+                // Get video track
+                const videoTrack = this.stream.getVideoTracks()[0];
+
+                // Replace track in peer connection
+                const senders = this.peer._pc.getSenders();
+                const videoSender = senders.find(sender => sender.track && sender.track.kind === 'video');
+
+                if (videoSender) {
+                    await videoSender.replaceTrack(videoTrack);
+                    console.log(`Capture mode switched to ${newMode}`);
+                }
+            }
+
+            // Notify viewers of mode change
+            if (this.socket) {
+                this.socket.emit('capture-mode-changed', {
+                    sessionId: this.sessionId,
+                    mode: newMode
+                });
+            }
+
+        } catch (error) {
+            console.error('Error switching capture mode:', error);
             throw error;
         }
     }

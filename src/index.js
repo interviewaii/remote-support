@@ -118,18 +118,73 @@ function setupRemoteAssistanceHandlers() {
     ipcMain.handle('get-screen-sources', async () => {
         try {
             const sources = await desktopCapturer.getSources({
-                types: ['screen'],
+                types: ['screen', 'window'], // Include both screens and windows
                 thumbnailSize: { width: 150, height: 150 }
             });
 
             return sources.map(source => ({
                 id: source.id,
                 name: source.name,
-                thumbnail: source.thumbnail.toDataURL()
+                thumbnail: source.thumbnail.toDataURL(),
+                type: source.id.startsWith('screen') ? 'screen' : 'window'
             }));
         } catch (error) {
             console.error('Error getting screen sources:', error);
             return [];
+        }
+    });
+
+    // Handle request for main app window source specifically
+    ipcMain.handle('get-app-window-source', async () => {
+        try {
+            const sources = await desktopCapturer.getSources({
+                types: ['window'],
+                thumbnailSize: { width: 150, height: 150 }
+            });
+
+            console.log('Available windows:', sources.map(s => s.name));
+
+            // Get the main window's native window ID  
+            if (mainWindow && !mainWindow.isDestroyed()) {
+                const windowId = mainWindow.getMediaSourceId();
+                console.log('Main window ID:', windowId);
+
+                // Find by exact window ID match
+                const appWindow = sources.find(source => source.id === windowId);
+
+                if (appWindow) {
+                    console.log('Found app window by ID:', appWindow.name);
+                    return {
+                        id: appWindow.id,
+                        name: appWindow.name,
+                        thumbnail: appWindow.thumbnail.toDataURL(),
+                        type: 'window'
+                    };
+                }
+            }
+
+            // Fallback: Try to find by name
+            const appWindow = sources.find(source =>
+                source.name.toLowerCase().includes('interview') ||
+                source.name.toLowerCase().includes('desire') ||
+                source.name.toLowerCase().includes(app.getName().toLowerCase())
+            );
+
+            if (appWindow) {
+                console.log('Found app window by name:', appWindow.name);
+                return {
+                    id: appWindow.id,
+                    name: appWindow.name,
+                    thumbnail: appWindow.thumbnail.toDataURL(),
+                    type: 'window'
+                };
+            }
+
+            console.warn('App window not found! Available windows:', sources.map(s => s.name));
+            return null;
+        } catch (error) {
+            console.error('Error getting app window source:', error);
+            return null;
         }
     });
 
