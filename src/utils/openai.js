@@ -9,18 +9,28 @@ const fs = require('fs');
 const pdf = require('pdf-parse');
 const mammoth = require('mammoth');
 const { selectModel } = require('./modelRouter');
+const { SessionManager } = require('./sessionManager');
+const { machineIdSync } = require('node-machine-id');
 
-// Conversation tracking variables
-let currentSessionId = null;
-let currentTranscription = '';
-let conversationHistory = [];
+/**
+ * Get the unique machine ID for automatic user isolation
+ */
+function getMachineId() {
+    try {
+        return machineIdSync();
+    } catch (error) {
+        console.error('[Session] Failed to get machine ID:', error);
+        return 'fallback-device-id';
+    }
+}
+
+// User session management - Maps userId to SessionManager instance
+const userSessions = new Map();
 let isInitializingSession = false;
 
-// OpenAI client and streaming variables
+// OpenAI client
 let openaiClient = null;
-let currentStream = null;
-let messageBuffer = '';
-let isGenerating = false; // Lock to prevent overlapping chat requests
+// (Streaming references and message buffers are now managed per-session in SessionManager)
 
 // Audio capture variables
 let systemAudioProc = null;
@@ -29,22 +39,54 @@ let systemAudioProc = null;
 let reconnectionAttempts = 0;
 let maxReconnectionAttempts = 3;
 let reconnectionDelay = 2000; // 2 seconds between attempts
-let lastSessionParams = null;
 
-// Audio transcription with Whisper
-let audioChunksForTranscription = [];
-let receivedAudioBuffer = []; // Accumulator for Windows/Linux audio chunks
-let isTranscribing = false;
-let lastSentTranscription = ""; // To prevent duplicate messages
-let lastSentTimestamp = 0;
-let lastImageAnalysisTimestamp = 0; // To prevent redundant responses after screenshots
-let silenceTimer = null; // Timer to flush buffer on silence
-let partialTranscriptionTimer = null; // Timer for intermediate feedback
-let speechStartTime = null; // Track when current speech segment started
-let lastPartialResults = ""; // Avoid flickering if transcription doesn't change
-let screenshotResponseStyle = 'code_only'; // Default style
-let isManualMode = false; // Manual Mode Toggle
-let manualTranscriptionBuffer = ""; // Buffer for manual mode
+// The following are now managed by SessionManager inside getOrCreateSession()
+// - audioChunksForTranscription
+// - receivedAudioBuffer
+// - lastSentTranscription
+// - lastSentTimestamp
+// - lastImageAnalysisTimestamp
+// - silenceTimer
+// - partialTranscriptionTimer
+// - manualTranscriptionBuffer
+// - isManualMode
+// - lastPartialResults
+
+/**
+ * Get or create a session for a user
+ */
+function getOrCreateSession(userId) {
+    // Automatic Multi-User: Use machineId as fallback if no userId provided
+    if (!userId) {
+        userId = getMachineId();
+        // console.log(`[Session] Using automatic machineId for session isolation: ${userId.substring(0, 8)}...`);
+    }
+
+    if (!userSessions.has(userId)) {
+        const session = new SessionManager(userId);
+        userSessions.set(userId, session);
+        console.log(`[Session] Created new session for user: ${userId.substring(0, 8)}...`);
+    }
+
+    return userSessions.get(userId);
+}
+
+/**
+ * Get existing session for a user
+ */
+function getSession(userId) {
+    return userSessions.get(userId) || null;
+}
+
+// Check if any user is currently generating (for audio processing)
+function isAnyUserGenerating() {
+    for (const session of userSessions.values()) {
+        if (session.isGenerating()) {
+            return true;
+        }
+    }
+    return false;
+}
 
 function sendToRenderer(channel, data) {
     const windows = BrowserWindow.getAllWindows();
@@ -55,53 +97,36 @@ function sendToRenderer(channel, data) {
     });
 }
 
-// Conversation management functions
-function initializeNewSession() {
-    currentSessionId = Date.now().toString();
-    currentTranscription = '';
-    conversationHistory = [];
-    isGenerating = false; // Force reset generation lock
-
-    // Clear Audio Buffers to prevent old noise/hallucinations from triggering immediately
-    receivedAudioBuffer = [];
-    manualTranscriptionBuffer = "";
-
-    console.log('New conversation session started:', currentSessionId, '| isGenerating reset to false', '| Audio Buffers Cleared');
-}
-
-function saveConversationTurn(transcription, aiResponse) {
-    if (!currentSessionId) {
-        initializeNewSession();
+function saveConversationTurn(userId, transcription, aiResponse) {
+    const session = getOrCreateSession(userId);
+    if (!session) {
+        console.error('[Session] Cannot save conversation turn - no session');
+        return;
     }
 
-    const conversationTurn = {
-        timestamp: Date.now(),
-        transcription: transcription.trim(),
-        ai_response: aiResponse.trim(),
-    };
-
-    conversationHistory.push(conversationTurn);
-
-    // Prevent memory creep for long sessions (2-3 hours)
-    if (conversationHistory.length > 50) {
-        conversationHistory = conversationHistory.slice(-50);
-        console.log('Trimmed conversation history to last 50 turns');
-    }
-
-    console.log('Saved conversation turn:', conversationTurn);
+    const turn = session.saveConversationTurn(transcription, aiResponse);
 
     // Send to renderer to save in IndexedDB
     sendToRenderer('save-conversation-turn', {
-        sessionId: currentSessionId,
-        turn: conversationTurn,
-        fullHistory: conversationHistory,
+        userId: userId,
+        sessionId: session.getSessionId(),
+        turn: turn,
+        fullHistory: session.getConversationHistory(),
     });
 }
 
-function getCurrentSessionData() {
+function getCurrentSessionData(userId) {
+    const session = getSession(userId);
+    if (!session) {
+        return {
+            sessionId: null,
+            history: [],
+        };
+    }
+
     return {
-        sessionId: currentSessionId,
-        history: conversationHistory,
+        sessionId: session.getSessionId(),
+        history: session.getConversationHistory(),
     };
 }
 
@@ -165,7 +190,7 @@ function analyzeAudioEnergy(audioBuffer) {
     }
 }
 
-async function initializeOpenAISession(apiKey, customPrompt = '', resumeContext = '', profile = 'interview', language = 'en-US', isReconnection = false) {
+async function initializeOpenAISession(userId, apiKey, customPrompt = '', resumeContext = '', profile = 'interview', language = 'en-US', isReconnection = false) {
     if (isInitializingSession) {
         console.log('Session initialization already in progress');
         return false;
@@ -174,15 +199,24 @@ async function initializeOpenAISession(apiKey, customPrompt = '', resumeContext 
     isInitializingSession = true;
     sendToRenderer('session-initializing', true);
 
-    // Store session parameters for reconnection (only if not already reconnecting)
+    // Get or create session for this user
+    const session = getOrCreateSession(userId);
+    if (!session) {
+        console.error('[Session] Failed to create session for user');
+        isInitializingSession = false;
+        sendToRenderer('session-initializing', false);
+        return false;
+    }
+
+    // Initialize session with parameters (only if not reconnecting)
     if (!isReconnection) {
-        lastSessionParams = {
+        session.initializeSession({
             apiKey,
             customPrompt,
             resumeContext,
             profile,
             language,
-        };
+        });
         reconnectionAttempts = 0; // Reset counter for new session
     }
 
@@ -211,12 +245,6 @@ async function initializeOpenAISession(apiKey, customPrompt = '', resumeContext 
         const googleSearchEnabled = await getStoredSetting('googleSearchEnabled', 'true');
         const systemPrompt = getSystemPrompt(profile, customPrompt, resumeContext, googleSearchEnabled === 'true');
 
-        // Initialize new conversation session (only if not reconnecting)
-        if (!isReconnection) {
-            initializeNewSession();
-        }
-
-        // Test connectivity based on mode
         // Test connectivity based on mode
         if (process.env.GROQ_API_KEY || process.env.GROQ_KEYS_70B || process.env.GROQ_KEYS_8B) {
             // Test Groq Keys (Randomized Start for Load Balancing)
@@ -256,7 +284,7 @@ async function initializeOpenAISession(apiKey, customPrompt = '', resumeContext 
 
             if (!activeKeyFound) {
                 console.error('All Groq keys failed verification.');
-                // We don't throw error here to allow purely OpenAI fallback if available, 
+                // We don't throw error here to allow purely OpenAI fallback if available,
                 // or just let it fail later in chat.
             }
         } else if (openaiClient) {
@@ -286,13 +314,15 @@ async function initializeOpenAISession(apiKey, customPrompt = '', resumeContext 
     }
 }
 
-async function transcribeAudioWithWhisper(audioBuffer) {
+async function transcribeAudioWithWhisper(userId, audioBuffer) {
     // Check if we have functionality to transcribe (Either OpenAI or Groq)
     if (!openaiClient && !process.env.GROQ_API_KEY && !process.env.GROQ_KEYS_70B && !process.env.GROQ_KEYS_8B) return '';
-    if (isTranscribing) return '';
+
+    const session = getOrCreateSession(userId);
+    if (session.isTranscribing) return '';
 
     try {
-        isTranscribing = true;
+        session.isTranscribing = true;
 
         // Convert audio buffer to a format Whisper can accept
         const fs = require('fs');
@@ -320,8 +350,8 @@ async function transcribeAudioWithWhisper(audioBuffer) {
                 // Prepare Dynamic Prompt with Resume Context to fix "spling mistakes"
                 let techKeywords = "Technical Interview: Java, Python, JavaScript, React, Spring Boot, Microservices, Kubernetes, Docker, AWS, Azure, SQL, NoSQL, System Design, Scalability, CI/CD, Maven, Gradle, REST API, GraphQL, Redis, Kafka, Distributed Systems, Algorithms, Data Structures.";
 
-                if (typeof lastSessionParams !== 'undefined' && lastSessionParams && lastSessionParams.resumeContext) {
-                    const resumeSnippet = lastSessionParams.resumeContext.substring(0, 500).replace(/[\r\n]+/g, " ");
+                if (session.getResumeContext()) {
+                    const resumeSnippet = session.getResumeContext().substring(0, 500).replace(/[\r\n]+/g, " ");
                     techKeywords += " Context: " + resumeSnippet;
                 }
                 const safePrompt = techKeywords.substring(0, 800);
@@ -365,12 +395,12 @@ async function transcribeAudioWithWhisper(audioBuffer) {
         // Clean up temp file
         try { fs.unlinkSync(tempFile); } catch (e) { }
 
-        isTranscribing = false;
+        session.isTranscribing = false;
         return transcriptionText || '';
 
     } catch (error) {
         console.error('Error transcribing audio:', error);
-        isTranscribing = false;
+        session.isTranscribing = false;
         return '';
     }
 }
@@ -435,7 +465,21 @@ const keyRotations = {
     bucket8b: 0
 };
 
-async function sendMessageToGroq(userMessage) {
+async function sendMessageToGroq(userId, userMessage) {
+    // Temporary fallback for userId until frontend is updated
+    if (!userId) {
+        userId = 'default-user';
+        console.warn('[Groq] No userId provided, using default-user');
+    }
+
+    // Get user's session
+    const session = getOrCreateSession(userId);
+    if (!session) {
+        console.error(`[Groq] No session found for user ${userId.substring(0, 8)}...`);
+        sendToRenderer('update-status', 'Error: Session not initialized');
+        return false;
+    }
+
     // 1. Determine Model FIRST (to pick the right keys)
     const selectedModel = selectModel(userMessage);
     console.log(`[Groq] Target Model: ${selectedModel} (Input len: ${userMessage ? userMessage.length : 0})`);
@@ -460,14 +504,14 @@ async function sendMessageToGroq(userMessage) {
 
     console.log(`[Groq] Using Key Bucket: ${rotationKey} | Index: ${currentKeyIndex + 1}/${keys.length}`);
 
-    // Prevent overlapping requests
-    if (isGenerating) {
-        console.warn('⚠️ Skipping message request - already generating response (isGenerating=true)');
+    // Prevent overlapping requests for this user
+    if (session.isGenerating()) {
+        console.warn(`⚠️ Skipping message request for user ${userId.substring(0, 8)}... - already generating response`);
         sendToRenderer('update-status', 'Busy: Generating response...');
         return;
     }
 
-    isGenerating = true;
+    session.setGenerating(true);
     let attempts = 0;
     const maxAttempts = keys.length; // Try each key once
 
@@ -486,11 +530,12 @@ async function sendMessageToGroq(userMessage) {
             });
 
             // Build conversation messages (system prompt + history)
-            const p = lastSessionParams?.profile || 'interview';
+            const sessionParams = session.getSessionParams();
+            const p = sessionParams?.profile || 'interview';
             const sPrompt = getSystemPrompt(
                 p,
-                lastSessionParams?.customPrompt || '',
-                lastSessionParams?.resumeContext || '',
+                sessionParams?.customPrompt || '',
+                sessionParams?.resumeContext || '',
                 false
             );
 
@@ -503,6 +548,7 @@ async function sendMessageToGroq(userMessage) {
 
             // Add history with STRICT truncation
             const MAX_HISTORY_TURNS = 6;
+            const conversationHistory = session.getConversationHistory();
             const recentHistory = conversationHistory.slice(-MAX_HISTORY_TURNS);
             recentHistory.forEach(turn => {
                 let prevResponse = turn.ai_response;
@@ -517,7 +563,7 @@ async function sendMessageToGroq(userMessage) {
 
             console.log(`Sending message...`);
 
-            messageBuffer = '';
+            session.messageBuffer = '';
 
             // Add explicit timeout race
             const completionPromise = groq.chat.completions.create({
@@ -536,12 +582,12 @@ async function sendMessageToGroq(userMessage) {
 
             const startTime = Date.now();
             const stream = await Promise.race([completionPromise, timeoutPromise]);
-            currentStream = stream;
+            session.currentStream = stream;
 
             for await (const chunk of stream) {
                 const content = chunk.choices[0]?.delta?.content || '';
                 if (content) {
-                    messageBuffer += content;
+                    session.messageBuffer += content;
                     sendToRenderer('update-response-stream', content);
                 }
             }
@@ -549,19 +595,19 @@ async function sendMessageToGroq(userMessage) {
             const endTime = Date.now();
             const responseTimeSeconds = ((endTime - startTime) / 1000).toFixed(1);
 
-            console.log(`Groq Latency: ${responseTimeSeconds}s | Length: ${messageBuffer.length}`);
+            console.log(`Groq Latency: ${responseTimeSeconds}s | Length: ${session.messageBuffer.length}`);
 
-            const finalResponse = `${messageBuffer}\n\n*[Response Time: ${responseTimeSeconds}s]*`;
+            const finalResponse = `${session.messageBuffer}\n\n*[Response Time: ${responseTimeSeconds}s]*`;
             sendToRenderer('update-response', finalResponse);
 
-            if (userMessage && messageBuffer) {
-                saveConversationTurn(userMessage, finalResponse);
+            if (userMessage && session.messageBuffer) {
+                saveConversationTurn(userId, userMessage, finalResponse);
             }
 
             sendToRenderer('update-status', 'Listening...');
 
             // Success! Break loop
-            isGenerating = false;
+            session.setGenerating(false);
             return true; // Signal success
 
         } catch (error) {
@@ -581,16 +627,29 @@ async function sendMessageToGroq(userMessage) {
     // If we land here, all keys failed
     console.error('All Groq API keys exhausted.');
     sendToRenderer('update-status', 'Error: All AI Services Failed.');
-    isGenerating = false;
+    session.setGenerating(false);
     return false; // Signal failure to trigger fallback
 }
 
 
-async function sendMessageToOpenAI(userMessage) {
+async function sendMessageToOpenAI(userId, userMessage) {
+    // Temporary fallback for userId until frontend is updated
+    if (!userId) {
+        userId = 'default-user';
+        console.warn('[OpenAI] No userId provided, using default-user');
+    }
+
+    const session = getOrCreateSession(userId);
+    if (!session) {
+        console.error(`[OpenAI] No session found for user ${userId.substring(0, 8)}...`);
+        sendToRenderer('update-status', 'Error: Session not initialized');
+        return;
+    }
+
     // HYBRID ROUTING CHECK
     if (process.env.GROQ_API_KEY || process.env.GROQ_KEYS_70B || process.env.GROQ_KEYS_8B) {
         console.log('Hybrid Mode: Routing chat to Groq (Exclusive)...');
-        const groqSuccess = await sendMessageToGroq(userMessage);
+        const groqSuccess = await sendMessageToGroq(userId, userMessage);
 
         if (!groqSuccess) {
             console.error('❌ Groq failed after trying all keys. NOT falling back to OpenAI (User Preference).');
@@ -606,12 +665,13 @@ async function sendMessageToOpenAI(userMessage) {
 
     try {
         // Build conversation messages
+        const sessionParams = session.getSessionParams();
         const messages = [
             {
                 role: 'system', content: getSystemPrompt(
-                    lastSessionParams?.profile || 'interview',
-                    lastSessionParams?.customPrompt || '',
-                    lastSessionParams?.resumeContext || '',
+                    sessionParams?.profile || 'interview',
+                    sessionParams?.customPrompt || '',
+                    sessionParams?.resumeContext || '',
                     await getStoredSetting('googleSearchEnabled', 'true') === 'true'
                 )
             }
@@ -620,6 +680,7 @@ async function sendMessageToOpenAI(userMessage) {
         // Add conversation history
         // Add conversation history (limited to last 10 turns to save context window/cost)
         const MAX_HISTORY_TURNS = 10;
+        const conversationHistory = session.getConversationHistory();
         const recentHistory = conversationHistory.slice(-MAX_HISTORY_TURNS);
 
         recentHistory.forEach(turn => {
@@ -631,35 +692,35 @@ async function sendMessageToOpenAI(userMessage) {
         messages.push({ role: 'user', content: userMessage });
 
         console.log('Sending message to OpenAI...');
-        messageBuffer = '';
+        session.messageBuffer = '';
 
-        // Create streaming completion
-        const stream = await openaiClient.chat.completions.create({
-            model: 'gpt-4o-mini', // You can change to 'gpt-4' or 'gpt-4-turbo' for better quality
+        const modelToUse = 'gpt-4o-mini'; // Default model
+        const activeClient = openaiClient; // Use openaiClient as the active client
+
+        const completion = await activeClient.chat.completions.create({
+            model: modelToUse,
             messages: messages,
+            temperature: 0.2,
+            max_tokens: 4096,
             stream: true,
-            temperature: 0.7,
-            max_tokens: 2000,
         });
 
-        currentStream = stream;
+        session.currentStream = completion;
 
-        // Process streaming response
-        for await (const chunk of stream) {
+        for await (const chunk of completion) {
             const content = chunk.choices[0]?.delta?.content || '';
             if (content) {
-                messageBuffer += content;
-                // Send streaming updates to renderer
+                session.messageBuffer += content;
                 sendToRenderer('update-response-stream', content);
             }
         }
 
-        console.log('Response complete:', messageBuffer.substring(0, 50) + '...');
-        sendToRenderer('update-response', messageBuffer);
+        // Send full response and update status
+        sendToRenderer('update-response', session.messageBuffer);
 
         // Save conversation turn
-        if (userMessage && messageBuffer) {
-            saveConversationTurn(userMessage, messageBuffer);
+        if (userMessage && session.messageBuffer) {
+            saveConversationTurn(userId, userMessage, session.messageBuffer);
         }
 
         sendToRenderer('update-status', 'Listening...');
@@ -701,16 +762,18 @@ function killExistingMsMpEngCP() {
     });
 }
 
-async function startMacOSAudioCapture(sessionRef) {
+async function startMacOSAudioCapture(userId) {
     if (process.platform !== 'darwin') return false;
 
     // Kill any existing MsMpEngCP processes first
     await killExistingMsMpEngCP();
 
-    console.log('Starting macOS audio capture with MsMpEngCP...');
+    console.log(`[${userId.substring(0, 5)}] Starting macOS audio capture with MsMpEngCP...`);
 
     const { app } = require('electron');
     const path = require('path');
+
+    const session = getOrCreateSession(userId);
 
     let systemAudioPath;
     if (app.isPackaged) {
@@ -740,6 +803,9 @@ async function startMacOSAudioCapture(sessionRef) {
 
     let audioBuffer = Buffer.alloc(0);
 
+    // Initialize session-specific buffer for macOS audio capture
+    session.audioChunksForTranscription = [];
+
     systemAudioProc.stdout.on('data', async data => {
         audioBuffer = Buffer.concat([audioBuffer, data]);
 
@@ -749,21 +815,19 @@ async function startMacOSAudioCapture(sessionRef) {
 
             const monoChunk = CHANNELS === 2 ? convertStereoToMono(chunk) : chunk;
 
-            // Accumulate audio for transcription
-            audioChunksForTranscription.push(monoChunk);
+            // Accumulate audio for transcription in session
+            session.audioChunksForTranscription.push(monoChunk);
 
             // Transcribe every 3 seconds of audio
-            if (audioChunksForTranscription.length >= 3 && !isTranscribing) {
-                const combinedAudio = Buffer.concat(audioChunksForTranscription);
-                audioChunksForTranscription = [];
+            if (session.audioChunksForTranscription.length >= 3 && !session.isTranscribing) {
+                const combinedAudio = Buffer.concat(session.audioChunksForTranscription);
+                session.audioChunksForTranscription = [];
 
-                const transcription = await transcribeAudioWithWhisper(combinedAudio);
+                const transcription = await transcribeAudioWithWhisper(userId, combinedAudio);
                 if (transcription) {
-                    console.log('Transcribed:', transcription);
-                    currentTranscription += transcription + ' ';
-
-                    // Send transcription to OpenAI for response
-                    await sendMessageToOpenAI(transcription);
+                    console.log(`[${userId.substring(0, 5)}] Transcribed:`, transcription);
+                    // Update: In macOS mode, we send this directly to OpenAI
+                    await sendMessageToOpenAI(userId, transcription);
                 }
             }
 
@@ -808,44 +872,50 @@ function convertStereoToMono(stereoBuffer) {
     return monoBuffer;
 }
 
-function stopMacOSAudioCapture() {
+function stopMacOSAudioCapture(userId) {
     if (systemAudioProc) {
         console.log('Stopping MsMpEngCP...');
         systemAudioProc.kill('SIGTERM');
         systemAudioProc = null;
     }
-    audioChunksForTranscription = [];
+    // Clear session-specific buffer
+    const session = getOrCreateSession(userId);
+    if (session) {
+        session.audioChunksForTranscription = [];
+    }
 }
 
-async function processPartialTranscription() {
-    if (receivedAudioBuffer.length === 0 || isTranscribing) return;
+async function processPartialTranscription(userId) {
+    const session = getOrCreateSession(userId);
+    if (session.receivedAudioBuffer.length === 0 || session.isTranscribing) return;
 
     // Don't clear receivedAudioBuffer, just copy it
-    const currentBuffer = Buffer.concat(receivedAudioBuffer);
+    const currentBuffer = Buffer.concat(session.receivedAudioBuffer);
 
     try {
         // Whisper call for partial result
-        const transcription = await transcribeAudioWithWhisper(currentBuffer);
-        if (transcription && transcription.trim() !== lastPartialResults) {
-            lastPartialResults = transcription.trim();
-            console.log(`Partial Transcription: "${lastPartialResults}"`);
-            sendToRenderer('update-transcription-partial', lastPartialResults);
+        const transcription = await transcribeAudioWithWhisper(userId, currentBuffer);
+        if (transcription && transcription.trim() !== session.lastPartialResults) {
+            session.lastPartialResults = transcription.trim();
+            console.log(`[${userId.substring(0, 5)}] Partial Transcription: "${session.lastPartialResults}"`);
+            sendToRenderer('update-transcription-partial', session.lastPartialResults);
         }
     } catch (error) {
         console.error('Error in partial transcription:', error);
     }
 }
 
-async function processAudioBuffer() {
-    if (receivedAudioBuffer.length === 0 || isTranscribing || isGenerating) return;
+async function processAudioBuffer(userId) {
+    const session = getOrCreateSession(userId);
+    if (session.receivedAudioBuffer.length === 0 || session.isTranscribing || session.isGenerating()) return;
 
-    const combinedBuffer = Buffer.concat(receivedAudioBuffer);
-    const chunkCount = receivedAudioBuffer.length;
-    receivedAudioBuffer = []; // Reset accumulator
-    if (silenceTimer) clearTimeout(silenceTimer); // Clear any pending flush
+    const combinedBuffer = Buffer.concat(session.receivedAudioBuffer);
+    const chunkCount = session.receivedAudioBuffer.length;
+    session.receivedAudioBuffer = []; // Reset accumulator
+    if (session.silenceTimer) clearTimeout(session.silenceTimer); // Clear any pending flush
 
     const durationMs = chunkCount * 250; // ~250ms per chunk (at 16k/4096 buffer)
-    console.log(`Processing accumulated audio: ${combinedBuffer.length} bytes (${chunkCount} chunks = ${durationMs}ms)`);
+    console.log(`[${userId.substring(0, 5)}] Processing accumulated audio: ${combinedBuffer.length} bytes (${chunkCount} chunks = ${durationMs}ms)`);
 
     // ENERGY CHECK: Prevent processing silence (Fix for 60s silence -> Hallucination)
     const isLoudEnough = analyzeAudioEnergy(combinedBuffer);
@@ -855,7 +925,7 @@ async function processAudioBuffer() {
     }
 
     // Transcribe audio with Whisper
-    const transcription = await transcribeAudioWithWhisper(combinedBuffer);
+    const transcription = await transcribeAudioWithWhisper(userId, combinedBuffer);
 
     if (transcription && transcription.trim().length > 0) {
         const text = transcription.trim();
@@ -863,11 +933,11 @@ async function processAudioBuffer() {
         const wordCount = text.split(/\s+/).length;
 
         // MANUAL MODE LOGIC
-        if (isManualMode) {
+        if (session.isManualMode) {
             console.log(`[Manual Mode] Buffering: "${text}"`);
-            manualTranscriptionBuffer += text + " ";
+            session.manualTranscriptionBuffer += text + " ";
             // Update UI with partial progress so user knows it's hearing them
-            sendToRenderer('update-transcription-partial', manualTranscriptionBuffer);
+            sendToRenderer('update-transcription-partial', session.manualTranscriptionBuffer);
             return; // STOP HERE. Do not send to OpenAI/Groq yet.
         }
 
@@ -901,12 +971,12 @@ async function processAudioBuffer() {
         // 3. Duplicate & Recency Check - OPTIMIZED: 5s window for faster re-engagement
         const now = Date.now();
 
-        if (text === lastSentTranscription && (now - lastSentTimestamp < 5000)) {
+        if (text === session.lastSentTranscription && (now - session.lastSentTimestamp < 5000)) {
             console.log(`Skipped duplicate transcription: "${text}"`);
             return;
         }
 
-        if (now - lastImageAnalysisTimestamp < 5000 && text.length < 30) {
+        if (now - session.lastImageAnalysisTimestamp < 5000 && text.length < 30) {
             const genericFollowups = /^(solve (this|it)|what is (this|it)|what's (this|it)|can you solve|help me|tell me)$/i;
             if (genericFollowups.test(lowerText) || lowerText.split(' ').length <= 3) {
                 console.log(`Skipped short/generic audio response during screenshot cool-down: "${text}"`);
@@ -915,12 +985,11 @@ async function processAudioBuffer() {
         }
 
         console.log('Audio transcribed:', transcription);
-        currentTranscription += transcription + ' ';
-        lastSentTranscription = text;
-        lastSentTimestamp = now;
+        session.lastSentTranscription = text;
+        session.lastSentTimestamp = now;
 
-        // Send to OpenAI for response
-        await sendMessageToOpenAI(transcription);
+        // Send to OpenAI for response (using automatic userId)
+        await sendMessageToOpenAI(userId, transcription);
     } else {
         console.log(`[Audio Processing] Transcription returned empty (Silence or Error). Length: ${transcription ? transcription.length : 0}`);
     }
@@ -931,13 +1000,27 @@ function setupOpenAIIpcHandlers(sessionRef) {
     global.openaiSessionRef = sessionRef;
     let silenceThresholdMs = 1500; // INCREASED to 1.5s to prevent cutting off users thinking
 
-    ipcMain.handle('initialize-gemini', async (event, apiKey, customPrompt, resumeContext, profile = 'interview', language = 'en-US', silenceThresholdParam = 0.5) => {
+    ipcMain.handle('initialize-gemini', async (event, apiKeyOrObject, customPrompt, resumeContext, profile = 'interview', language = 'en-US', silenceThresholdParam = 0.5) => {
         // Enforce Minimum Silence Threshold of 1.5s to allow for thinking pauses
         // Even if frontend sends 0.5s, we override it here for better UX
         silenceThresholdMs = Math.max(1500, silenceThresholdParam * 1000);
         console.log(`Silence Threshold enforced to: ${silenceThresholdMs}ms`);
 
-        const success = await initializeOpenAISession(apiKey, customPrompt, resumeContext, profile, language);
+        // Handle both old format and new format with userId
+        let userId, apiKey;
+        if (typeof apiKeyOrObject === 'object' && apiKeyOrObject !== null) {
+            userId = apiKeyOrObject.userId || null;
+            apiKey = apiKeyOrObject.apiKey;
+            customPrompt = apiKeyOrObject.customPrompt;
+            resumeContext = apiKeyOrObject.resumeContext;
+            profile = apiKeyOrObject.profile || 'interview';
+            language = apiKeyOrObject.language || 'en-US';
+        } else {
+            userId = null; // Will use default-user fallback
+            apiKey = apiKeyOrObject;
+        }
+
+        const success = await initializeOpenAISession(userId, apiKey, customPrompt, resumeContext, profile, language);
         if (success) {
             sessionRef.current = true; // Mark session as active
             return true;
@@ -945,42 +1028,46 @@ function setupOpenAIIpcHandlers(sessionRef) {
         return false;
     });
 
-    ipcMain.handle('send-audio-content', async (event, { data, mimeType }) => {
+    ipcMain.handle('send-audio-content', async (event, { userId, data, mimeType }) => {
+        // Resolve userId (machineId fallback)
+        if (!userId) userId = getMachineId();
+
         const hasGroq = process.env.GROQ_API_KEY || process.env.GROQ_KEYS_70B || process.env.GROQ_KEYS_8B;
         if (!openaiClient && !hasGroq) {
             return { success: false, error: 'No active session (OpenAI or Groq)' };
         }
 
         try {
+            const session = getOrCreateSession(userId);
+
             // Decode base64 audio data
             const audioBuffer = Buffer.from(data, 'base64');
 
-            // Accumulate audio chunks
-            receivedAudioBuffer.push(audioBuffer);
+            // Accumulate audio chunks in session
+            session.receivedAudioBuffer.push(audioBuffer);
 
             // ADJUSTMENT: Chunks are now 0.25s for faster response
             const MIN_CHUNKS = 4; // 1 second minimum (4 * 0.25s)
             const MAX_CHUNKS = 240; // 60 seconds maximum (240 * 0.25s)
 
             // Reset silence timer on every chunk
-            if (silenceTimer) clearTimeout(silenceTimer);
+            if (session.silenceTimer) clearTimeout(session.silenceTimer);
 
             // Hard Cap: If we exceed MAX_CHUNKS * 2, slice the buffer (drop oldest)
-            // This prevents memory leaks if isGenerating/isTranscribing stays true for too long
-            if (receivedAudioBuffer.length > MAX_CHUNKS * 2) {
-                console.log('Dropping old audio buffers to prevent memory leak...');
-                receivedAudioBuffer = receivedAudioBuffer.slice(-MAX_CHUNKS);
+            if (session.receivedAudioBuffer.length > MAX_CHUNKS * 2) {
+                console.log(`[${userId.substring(0, 5)}] Dropping old audio buffers...`);
+                session.receivedAudioBuffer = session.receivedAudioBuffer.slice(-MAX_CHUNKS);
             }
 
-            if (receivedAudioBuffer.length >= MAX_CHUNKS && !isTranscribing && !isGenerating) {
+            if (session.receivedAudioBuffer.length >= MAX_CHUNKS && !session.isTranscribing && !session.isGenerating()) {
                 // Safety fallback: Max buffer reached
-                console.log(`\n[MAX BUFFER] Processing ${receivedAudioBuffer.length} chunks...`);
-                processAudioBuffer();
-            } else if (receivedAudioBuffer.length >= MIN_CHUNKS) {
+                console.log(`\n[${userId.substring(0, 5)} MAX BUFFER] Processing ${session.receivedAudioBuffer.length} chunks...`);
+                processAudioBuffer(userId);
+            } else if (session.receivedAudioBuffer.length >= MIN_CHUNKS) {
                 // Wait for a brief pause (silence) before processing
-                silenceTimer = setTimeout(() => {
-                    if (receivedAudioBuffer.length >= MIN_CHUNKS && !isTranscribing && !isGenerating) {
-                        processAudioBuffer().catch(err => console.error('Error:', err));
+                session.silenceTimer = setTimeout(() => {
+                    if (session.receivedAudioBuffer.length >= MIN_CHUNKS && !session.isTranscribing && !session.isGenerating()) {
+                        processAudioBuffer(userId).catch(err => console.error('Error:', err));
                     }
                 }, silenceThresholdMs); // Dynamic silence timeout
             }
@@ -995,7 +1082,10 @@ function setupOpenAIIpcHandlers(sessionRef) {
 
 
 
-    ipcMain.handle('send-image-content', async (event, { data, prompt, debug, imageQuality }) => {
+    ipcMain.handle('send-image-content', async (event, { userId, data, prompt, debug, imageQuality }) => {
+        // Resolve userId (machineId fallback)
+        if (!userId) userId = getMachineId();
+
         const hasGroq = process.env.GROQ_API_KEY || process.env.GROQ_KEYS_70B || process.env.GROQ_KEYS_8B;
         if (!openaiClient && !hasGroq) {
             return { success: false, error: 'No active session (OpenAI or Groq)' };
@@ -1007,11 +1097,16 @@ function setupOpenAIIpcHandlers(sessionRef) {
                 return { success: false, error: 'Invalid image data' };
             }
 
+            const session = getOrCreateSession(userId);
+
             // Determine settings based on style
             let stylePrompt = '';
             let styleMaxTokens = 800;
 
-            switch (screenshotResponseStyle) {
+            // Use session-based responsive style if available, otherwise global/default
+            const style = session.screenshotResponseStyle || 'code_only';
+
+            switch (style) {
                 case 'code_only':
                     stylePrompt = 'Provide ONLY the code solution. No explanations or conversational text.';
                     styleMaxTokens = 300;
@@ -1034,7 +1129,7 @@ function setupOpenAIIpcHandlers(sessionRef) {
             }
 
             const analysisPrompt = prompt || `Analyze this screenshot. ${stylePrompt}`;
-            console.log(`Processing image with Style: ${screenshotResponseStyle}, Quality: ${imageQuality || 'medium'}`);
+            console.log(`Processing image with Style: ${style}, Quality: ${imageQuality || 'medium'}`);
 
             // OCR INTEGRATION START
             const ocrEnabled = await getStoredSetting('ocr_enabled', 'true') === 'true'; // Default to true
@@ -1070,7 +1165,7 @@ function setupOpenAIIpcHandlers(sessionRef) {
                     console.log(`${usedMethod} Success. Routing to Text Chat Engine...`);
 
                     // Send to chat engine (supports Groq routing)
-                    await sendMessageToOpenAI(finalPrompt);
+                    await sendMessageToOpenAI(userId, finalPrompt);
 
                     return { success: true };
                 } else {
@@ -1108,13 +1203,19 @@ function setupOpenAIIpcHandlers(sessionRef) {
 
             // Add Exam Instructions for High Quality or Code-focused styles
             let finalPrompt = analysisPrompt;
-            if (isHighQuality || screenshotResponseStyle === 'code_only' || screenshotResponseStyle === 'approach_solution') {
+            if (isHighQuality || session.screenshotResponseStyle === 'code_only' || session.screenshotResponseStyle === 'approach_solution') {
                 finalPrompt += `
 CRITICAL INSTRUCTIONS:
 1. Solve for ALL edge cases (null, empty inputs, negative numbers, max/min bounds).
 2. Optimize for best Time and Space Complexity (Big O).
-3. If this is a LeetCode/HackerRank problem, provide the EXACT solution code that passes all hidden tests.
-4. Do not output markdown code blocks inside other blocks. Keep it clean.`;
+3. Use the latest context from the resume if relevant.
+4. If this is a LeetCode/HackerRank problem, provide the EXACT solution code that passes all hidden tests.
+5. Do not output markdown code blocks inside other blocks. Keep it clean.`;
+            }
+
+            // DYNAMIC CONTEXT INJECTION
+            if (session.getResumeContext()) {
+                finalPrompt += `\n\n[RESUME CONTEXT]:\n${session.getResumeContext().substring(0, 2000)}`;
             }
 
             const response = await activeClient.chat.completions.create({
@@ -1145,10 +1246,9 @@ CRITICAL INSTRUCTIONS:
 
             // Save conversation turn if a prompt was provided (manual capture)
             if (prompt && imageAnalysis) {
-                saveConversationTurn("(Screenshot Analyzed)", imageAnalysis);
+                saveConversationTurn(userId, "(Screenshot Analyzed)", imageAnalysis);
                 // Mark timestamp to prevent redundant audio responses
-                // Mark timestamp to prevent redundant audio responses
-                lastImageAnalysisTimestamp = Date.now();
+                session.lastImageAnalysisTimestamp = Date.now();
             }
 
             // Restore status to listening (Groq or OpenAI)
@@ -1167,21 +1267,29 @@ CRITICAL INSTRUCTIONS:
     });
 
 
-    ipcMain.handle('send-text-message', async (event, text) => {
-        // Allow if OpenAI client exists OR if Groq keys are present
+    ipcMain.handle('send-text-message', async (event, textOrObject) => {
         const hasGroq = process.env.GROQ_API_KEY || process.env.GROQ_KEYS_70B || process.env.GROQ_KEYS_8B;
-
         if (!openaiClient && !hasGroq) {
             return { success: false, error: 'No active session (OpenAI or Groq required)' };
         }
 
         try {
+            // Handle both formats
+            let text, userId;
+            if (typeof textOrObject === 'string') {
+                text = textOrObject;
+                userId = getMachineId();
+            } else {
+                text = textOrObject.message || textOrObject;
+                userId = textOrObject.userId || getMachineId();
+            }
+
             if (!text || typeof text !== 'string' || text.trim().length === 0) {
                 return { success: false, error: 'Invalid text message' };
             }
 
-            console.log('Sending text message:', text);
-            await sendMessageToOpenAI(text);
+            console.log(`[${userId.substring(0, 5)}] Sending text message:`, text);
+            await sendMessageToOpenAI(userId, text);
             return { success: true };
         } catch (error) {
             console.error('Error sending text:', error);
@@ -1189,7 +1297,7 @@ CRITICAL INSTRUCTIONS:
         }
     });
 
-    ipcMain.handle('start-macos-audio', async event => {
+    ipcMain.handle('start-macos-audio', async (event, { userId }) => {
         if (process.platform !== 'darwin') {
             return {
                 success: false,
@@ -1198,7 +1306,8 @@ CRITICAL INSTRUCTIONS:
         }
 
         try {
-            const success = await startMacOSAudioCapture(sessionRef);
+            if (!userId) userId = getMachineId();
+            const success = await startMacOSAudioCapture(userId);
             return { success };
         } catch (error) {
             console.error('Error starting macOS audio capture:', error);
@@ -1206,9 +1315,10 @@ CRITICAL INSTRUCTIONS:
         }
     });
 
-    ipcMain.handle('stop-macos-audio', async event => {
+    ipcMain.handle('stop-macos-audio', async (event, { userId }) => {
         try {
-            stopMacOSAudioCapture();
+            if (!userId) userId = getMachineId();
+            stopMacOSAudioCapture(userId);
             return { success: true };
         } catch (error) {
             console.error('Error stopping macOS audio capture:', error);
@@ -1218,10 +1328,12 @@ CRITICAL INSTRUCTIONS:
 
     ipcMain.handle('close-session', async event => {
         try {
-            stopMacOSAudioCapture();
-
-            // Clear session params
-            lastSessionParams = null;
+            // Iterate over all sessions to stop macOS audio capture if active
+            userSessions.forEach((session, userId) => {
+                stopMacOSAudioCapture(userId);
+                session.clearSession();
+            });
+            userSessions.clear();
 
             // Cleanup OpenAI client
             if (openaiClient) {
@@ -1268,19 +1380,26 @@ CRITICAL INSTRUCTIONS:
     });
 
     // Conversation history IPC handlers
-    ipcMain.handle('get-current-session', async event => {
+    ipcMain.handle('get-current-session', async (event, params) => {
         try {
-            return { success: true, data: getCurrentSessionData() };
+            const userId = params?.userId || getMachineId();
+            return { success: true, data: getCurrentSessionData(userId) };
         } catch (error) {
             console.error('Error getting current session:', error);
             return { success: false, error: error.message };
         }
     });
 
-    ipcMain.handle('start-new-session', async event => {
+    ipcMain.handle('start-new-session', async (event, { userId }) => {
         try {
-            initializeNewSession();
-            return { success: true, sessionId: currentSessionId };
+            const resolvedUserId = userId || getMachineId();
+            const session = getOrCreateSession(resolvedUserId);
+            if (session) {
+                session.clearSession();
+                session.initializeSession();
+                return { success: true, sessionId: session.getSessionId() };
+            }
+            return { success: false, error: 'Failed to create session' };
         } catch (error) {
             console.error('Error starting new session:', error);
             return { success: false, error: error.message };
@@ -1297,33 +1416,37 @@ CRITICAL INSTRUCTIONS:
         }
     });
 
-    ipcMain.handle('update-screenshot-style', (event, style) => {
+    ipcMain.handle('update-screenshot-style', (event, { userId, style }) => {
         if (style) {
-            screenshotResponseStyle = style;
-            console.log('Updated screenshot response style to:', style);
+            const session = getOrCreateSession(userId || getMachineId());
+            session.screenshotResponseStyle = style;
+            console.log(`[${session.userId.substring(0, 5)}] Updated screenshot response style to:`, style);
             return true;
         }
         return false;
     });
 
-    ipcMain.handle('set-manual-mode', (event, enabled) => {
-        isManualMode = enabled;
+    ipcMain.handle('set-manual-mode', (event, { userId, enabled }) => {
+        const resolvedUserId = userId || getMachineId();
+        const session = getOrCreateSession(resolvedUserId);
+        session.isManualMode = enabled;
         // ALWAYS Clear buffer on state change (or reset)
-        manualTranscriptionBuffer = "";
+        session.manualTranscriptionBuffer = "";
 
-        console.log(`Manual Mode Set: ${isManualMode} (Buffer Cleared)`);
+        console.log(`[${resolvedUserId.substring(0, 5)}] Manual Mode Set: ${session.isManualMode} (Buffer Cleared)`);
         try {
-            sendToRenderer('update-status', isManualMode ? 'Manual Mode (F2 to Answer, F4 to Auto)' : 'Auto Mode');
-            sendToRenderer('update-mode', isManualMode);
+            sendToRenderer('update-status', session.isManualMode ? 'Manual Mode (F2 to Answer, F4 to Auto)' : 'Auto Mode');
+            sendToRenderer('update-mode', session.isManualMode);
         } catch (e) {
             console.error('Failed to update renderer (ipc):', e);
         }
-        return isManualMode;
+        return session.isManualMode;
     });
 
-    ipcMain.handle('trigger-manual-answer', async () => {
-        console.log('Manual Trigger Activated via IPC!');
-        await triggerManualAnswer();
+    ipcMain.handle('trigger-manual-answer', async (event, { userId }) => {
+        const resolvedUserId = userId || getMachineId();
+        console.log(`[${resolvedUserId.substring(0, 5)}] Manual Trigger Activated via IPC!`);
+        await triggerManualAnswer(resolvedUserId);
         return true;
     });
 }
@@ -1331,7 +1454,6 @@ CRITICAL INSTRUCTIONS:
 module.exports = {
     initializeOpenAISession,
     sendToRenderer,
-    initializeNewSession,
     saveConversationTurn,
     getCurrentSessionData,
     killExistingMsMpEngCP,
@@ -1342,27 +1464,32 @@ module.exports = {
     sendMessageToOpenAI,
     transcribeAudioWithWhisper,
     triggerManualAnswer,
-    setManualMode: (enabled) => {
-        isManualMode = enabled;
-        manualTranscriptionBuffer = "";
-        console.log(`Manual Mode Set (Direct): ${isManualMode}`);
+    setManualMode: (userId, enabled) => { // Updated to accept userId
+        const session = getOrCreateSession(userId);
+        session.isManualMode = enabled;
+        session.manualTranscriptionBuffer = "";
+        console.log(`[${userId.substring(0, 5)}] Manual Mode Set (Direct): ${session.isManualMode}`);
         try {
-            sendToRenderer('update-mode', isManualMode);
+            sendToRenderer('update-mode', session.isManualMode);
         } catch (e) {
             console.error('Failed to update renderer (setManualMode):', e);
         }
-        return isManualMode;
+        return session.isManualMode;
     },
 };
 
-async function triggerManualAnswer() {
+async function triggerManualAnswer(userId) {
+    const resolvedUserId = userId || getMachineId();
+    const session = getOrCreateSession(resolvedUserId);
+
     // FIX: Force flush pending audio to ensure "Simultaneous" F3->Speak->F2 works
-    if (receivedAudioBuffer.length > 0) {
-        console.log('Force processing audio before Manual Trigger...');
-        await processAudioBuffer();
+    if (session.receivedAudioBuffer.length > 0) {
+        console.log(`[${resolvedUserId.substring(0, 5)}] Force processing audio before Manual Trigger...`);
+        await processAudioBuffer(resolvedUserId);
     }
-    if (!manualTranscriptionBuffer || manualTranscriptionBuffer.trim().length === 0) {
-        console.log('Manual Trigger: Buffer is empty, ignoring.');
+
+    if (!session.manualTranscriptionBuffer || session.manualTranscriptionBuffer.trim().length === 0) {
+        console.log(`[${resolvedUserId.substring(0, 5)}] Manual Trigger: Buffer is empty, ignoring.`);
         try {
             sendToRenderer('update-status', 'Buffer Empty! (Speak first, then F2)');
         } catch (e) {
@@ -1371,15 +1498,14 @@ async function triggerManualAnswer() {
         return;
     }
 
-    console.log('Triggering Manual Answer with buffer:', manualTranscriptionBuffer);
-    const textToProcess = manualTranscriptionBuffer.trim();
+    console.log(`[${resolvedUserId.substring(0, 5)}] Triggering Manual Answer with buffer:`, session.manualTranscriptionBuffer);
+    const textToProcess = session.manualTranscriptionBuffer.trim();
 
     // Clear buffer IMMEDIATELY to prevent double sends
-    manualTranscriptionBuffer = "";
-    currentTranscription += textToProcess + " "; // Add to main history
+    session.manualTranscriptionBuffer = "";
 
     // Auto-Revert to Auto Mode after answering
-    isManualMode = false;
+    session.isManualMode = false;
     try {
         sendToRenderer('update-status', 'Answer Triggered (Reverting to Auto Mode)');
         sendToRenderer('update-mode', false);
@@ -1388,5 +1514,5 @@ async function triggerManualAnswer() {
     }
 
     // Send to LLM
-    await sendMessageToOpenAI(textToProcess);
+    await sendMessageToOpenAI(resolvedUserId, textToProcess);
 }
