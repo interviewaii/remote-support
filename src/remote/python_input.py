@@ -61,11 +61,13 @@ def simulate_key(key):
     user32.keybd_event(vk, 0, 2, 0)  # Key up
 
 if __name__ == '__main__':
-    # Read event from command line argument
+    # Read event from command line argument (base64 encoded)
     if len(sys.argv) < 2:
         sys.exit(1)
     
-    event_json = sys.argv[1]
+    import base64
+    base64_json = sys.argv[1]
+    event_json = base64.b64decode(base64_json).decode('utf-8')
     event = json.loads(event_json)
     
     event_type = event.get('type')

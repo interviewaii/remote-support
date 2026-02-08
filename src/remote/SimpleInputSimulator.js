@@ -1,115 +1,110 @@
 const { screen } = require('electron');
+const { exec } = require('child_process');
+const util = require('util');
+const execPromise = util.promisify(exec);
 
 /**
- * Reliable Windows Input Simulator using node-key-sender + Windows APIs
- * Works without native compilation
+ * Ultra-Simple Input Simulator using Python for all input simulation
+ * Base64 encodes JSON to avoid PowerShell quote escaping issues
  */
-class SimpleInputSimulator {
+class UltraSimpleInputSimulator {
     constructor() {
         this.platform = process.platform;
         this.isWindows = this.platform === 'win32';
         this.isInitialized = false;
-        this.ks = null;
 
-        console.log('Initializing SimpleInputSimulator...');
+        console.log('Initializing UltraSimpleInputSimulator...');
     }
 
     async initialize() {
         try {
             if (this.isWindows) {
-                // Load node-key-sender for keyboard
-                this.ks = require('node-key-sender');
-                console.log('SimpleInputSimulator: Initialized with node-key-sender');
+                console.log('UltraSimpleInputSimulator: Initialized (using Python for all input)');
                 this.isInitialized = true;
             } else {
-                console.warn('SimpleInputSimulator only works on Windows');
+                console.warn('UltraSimpleInputSimulator only works on Windows');
                 this.isInitialized = false;
             }
         } catch (error) {
-            console.error('SimpleInputSimulator: Initialization failed:', error.message);
+            console.error('UltraSimpleInputSimulator: Initialization failed:', error.message);
             this.isInitialized = false;
         }
     }
 
     /**
-     * Simulate mouse movement using Windows SetCursorPos
+     * Simulate mouse movement using Python script
      */
     async simulateMouseMove(x, y) {
         if (!this.isWindows) return;
 
         try {
-            const display = screen.getPrimaryDisplay();
-            const { width, height } = display.size;
-            const screenX = Math.round(x * width);
-            const screenY = Math.round(y * height);
+            const path = require('path');
+            const pythonScript = path.join(__dirname, 'python_input.py');
 
-            // Use FFI to call SetCursorPos directly
-            const ffi = require('ffi-napi');
-            const user32 = ffi.Library('user32', {
-                'SetCursorPos': ['bool', ['int', 'int']]
-            });
+            const event = {
+                type: 'mousemove',
+                x: x,
+                y: y
+            };
 
-            user32.SetCursorPos(screenX, screenY);
+            // Base64 encode to avoid PowerShell quote escaping issues
+            const eventJson = JSON.stringify(event);
+            const base64Event = Buffer.from(eventJson).toString('base64');
+            await execPromise(`python "${pythonScript}" "${base64Event}"`);
         } catch (error) {
-            // FFI not available, skip
+            // Silently ignore mouse move errors
         }
     }
 
     /**
-     * Simulate mouse click using Windows SendInput API
+     * Simulate mouse click using Python script
      */
     async simulateMouseClick(button, down) {
         if (!this.isWindows) return;
 
         try {
-            // Use PowerShell with SendInput for reliable clicking
-            const { exec } = require('child_process');
-            const util = require('util');
-            const execPromise = util.promisify(exec);
+            const path = require('path');
+            const pythonScript = path.join(__dirname, 'python_input.py');
 
-            // Map button events to Windows mouse event flags
-            const eventMap = {
-                'left': down ? 2 : 4,     // MOUSEEVENTF_LEFTDOWN : MOUSEEVENTF_LEFTUP
-                'right': down ? 8 : 16,   // MOUSEEVENTF_RIGHTDOWN : MOUSEEVENTF_RIGHTUP
-                'middle': down ? 32 : 64  // MOUSEEVENTF_MIDDLEDOWN : MOUSEEVENTF_MIDDLEUP
+            const event = {
+                type: down ? 'mousedown' : 'mouseup',
+                button: button || 'left'
             };
 
-            const event = eventMap[button] || eventMap['left'];
-
-            // Use Windows Forms to simulate mouse click
-            const script = `Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.Cursor]::Position = [System.Windows.Forms.Cursor]::Position; Add-Type -MemberDefinition '[DllImport("user32.dll")] public static extern void mouse_event(int flags, int dx, int dy, int dwData, int extraInfo);' -Name M -Namespace W; [W.M]::mouse_event(${event}, 0, 0, 0, 0)`;
-
-            await execPromise(`powershell -NoProfile -Command "${script}"`);
+            // Base64 encode to avoid PowerShell quote escaping issues
+            const eventJson = JSON.stringify(event);
+            const base64Event = Buffer.from(eventJson).toString('base64');
+            await execPromise(`python "${pythonScript}" "${base64Event}"`);
         } catch (error) {
-            // Silently ignore to prevent crashes
+            console.error('❌ Click error:', error.message);
         }
     }
 
     /**
-     * Simulate keyboard key press
+     * Simulate keyboard key press using Python script
      */
     async simulateKeyPress(key) {
-        if (!this.isWindows || !this.ks) return;
+        if (!this.isWindows) return;
 
         try {
-            // Map special keys
-            const keyMap = {
-                'Enter': '{enter}',
-                'Backspace': '{backspace}',
-                'Tab': '{tab}',
-                'Escape': '{esc}',
-                'Delete': '{delete}',
-                'ArrowUp': '{up}',
-                'ArrowDown': '{down}',
-                'ArrowLeft': '{left}',
-                'ArrowRight': '{right}',
-                ' ': '{space}'
+            console.log('⌨️ Simulating key press:', key);
+
+            const path = require('path');
+            const pythonScript = path.join(__dirname, 'python_input.py');
+
+            const event = {
+                type: 'keypress',
+                key: key
             };
 
-            const mappedKey = keyMap[key] || key;
-            await this.ks.sendKeys([mappedKey]);
+            // Base64 encode to avoid PowerShell quote escaping issues
+            const eventJson = JSON.stringify(event);
+            const base64Event = Buffer.from(eventJson).toString('base64');
+            await execPromise(`python "${pythonScript}" "${base64Event}"`);
+
+            console.log('✅ Key sent:', key);
         } catch (error) {
-            console.error('Error simulating key:', error.message);
+            console.error('❌ Key error:', error.message);
         }
     }
 
@@ -117,7 +112,10 @@ class SimpleInputSimulator {
      * Simulate input event
      */
     async simulateEvent(event) {
+        console.log('🎯 simulateEvent called:', event.type, 'initialized:', this.isInitialized);
+
         if (!this.isInitialized) {
+            console.warn('⚠️ Simulator not initialized!');
             return;
         }
 
@@ -128,28 +126,34 @@ class SimpleInputSimulator {
                     break;
 
                 case 'mousedown':
+                    console.log('🖱️ Mouse down detected');
                     await this.simulateMouseClick(event.button || 'left', true);
                     break;
 
                 case 'mouseup':
+                    console.log('🖱️ Mouse up detected');
                     await this.simulateMouseClick(event.button || 'left', false);
                     break;
 
                 case 'click':
+                    console.log('🖱️ Click detected');
                     await this.simulateMouseClick(event.button || 'left', true);
+                    await new Promise(resolve => setTimeout(resolve, 50));
+                    await this.simulateMouseClick(event.button || 'left', false);
                     break;
 
                 case 'keypress':
                 case 'keydown':
+                    console.log('⌨️ Keyboard event detected, key:', event.key);
                     await this.simulateKeyPress(event.key);
                     break;
 
                 default:
-                    // Ignore unknown event types
+                    console.log('❓ Unknown event type:', event.type);
                     break;
             }
         } catch (error) {
-            // Silently handle errors to prevent crashes
+            console.error('❌ Error in simulateEvent:', error);
         }
     }
 
@@ -158,9 +162,10 @@ class SimpleInputSimulator {
      */
     registerIpcHandlers(ipcMain) {
         ipcMain.on('simulate-input', (event, inputEvent) => {
+            console.log('🎮 IPC RECEIVED simulate-input event:', inputEvent.type, inputEvent);
             this.simulateEvent(inputEvent);
         });
-        console.log('SimpleInputSimulator: IPC handlers registered');
+        console.log('UltraSimpleInputSimulator: IPC handlers registered');
     }
 }
 
@@ -172,10 +177,10 @@ let inputSimulatorInstance = null;
  */
 function getInputSimulator() {
     if (!inputSimulatorInstance) {
-        inputSimulatorInstance = new SimpleInputSimulator();
+        inputSimulatorInstance = new UltraSimpleInputSimulator();
         inputSimulatorInstance.initialize();
     }
     return inputSimulatorInstance;
 }
 
-module.exports = { SimpleInputSimulator, getInputSimulator };
+module.exports = { UltraSimpleInputSimulator, getInputSimulator };
