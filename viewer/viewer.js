@@ -221,6 +221,9 @@ class RemoteViewer {
     setupRemoteControl() {
         const video = this.remoteVideo;
 
+        // Hide cursor over video to prevent double cursor
+        video.style.cursor = 'none';
+
         // Mouse move
         video.addEventListener('mousemove', (e) => {
             const rect = video.getBoundingClientRect();
