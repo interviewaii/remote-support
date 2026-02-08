@@ -11,7 +11,7 @@ const envPath = app.isPackaged
 require('dotenv').config({ path: envPath });
 const { createWindow, updateGlobalShortcuts } = require('./utils/window');
 const { setupOpenAIIpcHandlers, stopMacOSAudioCapture, sendToRenderer, triggerManualAnswer, setManualMode } = require('./utils/openai');
-const { getInputSimulator } = require('./remote/InputSimulator');
+const { getInputSimulator } = require('./remote/SimpleInputSimulator');
 
 const openaiSessionRef = {
     current: null,

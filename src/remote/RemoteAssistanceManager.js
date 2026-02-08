@@ -188,6 +188,7 @@ class RemoteAssistanceManager {
                 });
 
                 this.socket.on('control-event', ({ event, from }) => {
+                    console.log('RemoteAssistanceManager: Received control event:', event.type, event);
                     // Handle remote control events (mouse, keyboard)
                     this.handleControlEvent(event);
                 });
@@ -297,6 +298,7 @@ class RemoteAssistanceManager {
      * @param {Object} event - Control event (mouse/keyboard)
      */
     handleControlEvent(event) {
+        console.log('RemoteAssistanceManager: Handling control event, sending to main process:', event);
         // Send to main process for input simulation
         ipcRenderer.send('simulate-input', event);
     }

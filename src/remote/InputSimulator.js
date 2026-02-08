@@ -91,6 +91,10 @@ class InputSimulator {
      * @param {Object} event - Event data {type, x, y, button, key, etc.}
      */
     async simulateEvent(event) {
+        console.log('InputSimulator: simulateEvent called with:', event.type);
+        console.log('InputSimulator: isInitialized:', this.isInitialized);
+        console.log('InputSimulator: Using library:', this.nutjs ? 'nutjs' : this.robotjs ? 'robotjs' : this.windowsSim ? 'windowsSim' : 'none');
+
         if (!this.isInitialized) {
             console.error('Input simulator not initialized');
             return;
@@ -103,33 +107,40 @@ class InputSimulator {
         try {
             switch (event.type) {
                 case 'mousemove':
+                    console.log('InputSimulator: Simulating mouse move to', event.x, event.y);
                     await this.simulateMouseMove(event.x, event.y);
                     break;
 
                 case 'mousedown':
                 case 'mouseup':
+                    console.log('InputSimulator: Simulating mouse', event.type, event.button);
                     await this.simulateMouseClick(event.button, event.type === 'mousedown');
                     break;
 
                 case 'click':
+                    console.log('InputSimulator: Simulating click', event.button);
                     await this.simulateMouseClick(event.button || 'left', true);
                     await this.simulateMouseClick(event.button || 'left', false);
                     break;
 
                 case 'dblclick':
+                    console.log('InputSimulator: Simulating double click');
                     await this.simulateDoubleClick(event.button || 'left');
                     break;
 
                 case 'scroll':
+                    console.log('InputSimulator: Simulating scroll');
                     await this.simulateScroll(event.deltaX, event.deltaY);
                     break;
 
                 case 'keydown':
                 case 'keyup':
+                    console.log('InputSimulator: Simulating key', event.type, event.key);
                     await this.simulateKey(event.key, event.type === 'keydown');
                     break;
 
                 case 'keypress':
+                    console.log('InputSimulator: Simulating keypress', event.key);
                     await this.simulateKeyPress(event.key);
                     break;
 
@@ -290,9 +301,15 @@ class InputSimulator {
      * @param {Electron.IpcMain} ipcMain - Electron IPC main
      */
     registerIpcHandlers(ipcMain) {
+        // DISABLED: Remote control causes crashes
+        // Keeping view-only mode working
+        /*
         ipcMain.on('simulate-input', (event, inputEvent) => {
+            console.log('InputSimulator: Received simulate-input event:', inputEvent);
             this.simulateEvent(inputEvent);
         });
+        */
+        console.log('InputSimulator: Remote control disabled (view-only mode)');
     }
 }
 
