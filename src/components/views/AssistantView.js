@@ -929,16 +929,22 @@ export class AssistantView extends LitElement {
     scrollResponseUp() {
         const container = this.shadowRoot.querySelector('.response-container');
         if (container) {
-            const scrollAmount = container.clientHeight * 0.3; // Scroll 30% of container height
-            container.scrollTop = Math.max(0, container.scrollTop - scrollAmount);
+            const scrollAmount = container.clientHeight * 0.4; // Scroll 40% of container height
+            container.scrollBy({
+                top: -scrollAmount,
+                behavior: 'smooth'
+            });
         }
     }
 
     scrollResponseDown() {
         const container = this.shadowRoot.querySelector('.response-container');
         if (container) {
-            const scrollAmount = container.clientHeight * 0.3; // Scroll 30% of container height
-            container.scrollTop = Math.min(container.scrollHeight - container.clientHeight, container.scrollTop + scrollAmount);
+            const scrollAmount = container.clientHeight * 0.4; // Scroll 40% of container height
+            container.scrollBy({
+                top: scrollAmount,
+                behavior: 'smooth'
+            });
         }
     }
 

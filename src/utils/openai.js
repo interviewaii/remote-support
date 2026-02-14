@@ -316,10 +316,10 @@ async function initializeOpenAISession(userId, apiKey, customPrompt = '', resume
 
 async function transcribeAudioWithWhisper(userId, audioBuffer) {
     // Check if we have functionality to transcribe (Either OpenAI or Groq)
-    if (!openaiClient && !process.env.GROQ_API_KEY && !process.env.GROQ_KEYS_70B && !process.env.GROQ_KEYS_8B) return '';
+    if (!openaiClient && !process.env.GROQ_API_KEY && !process.env.GROQ_KEYS_70B && !process.env.GROQ_KEYS_8B) return null;
 
     const session = getOrCreateSession(userId);
-    if (session.isTranscribing) return '';
+    if (session.isTranscribing) return null;
 
     try {
         session.isTranscribing = true;
@@ -335,7 +335,7 @@ async function transcribeAudioWithWhisper(userId, audioBuffer) {
         const wavBuffer = Buffer.concat([wavHeader, audioBuffer]);
         fs.writeFileSync(tempFile, wavBuffer);
 
-        let transcriptionText = '';
+        let result = { text: '', language: '' };
 
         // 1. Try GROQ Whisper (Free, Fast) - Priority 1
         if (process.env.GROQ_API_KEY || process.env.GROQ_KEYS_70B || process.env.GROQ_KEYS_8B) {
@@ -344,10 +344,7 @@ async function transcribeAudioWithWhisper(userId, audioBuffer) {
                 const keys = getGroqKeys();
                 const randomKey = keys[Math.floor(Math.random() * keys.length)];
 
-                // console.log(`Transcribing with Groq (distil-whisper)... Key: ${randomKey.substring(0, 10)}...`);
-
-
-                // Prepare Dynamic Prompt with Resume Context to fix "spling mistakes"
+                // Prepare Dynamic Prompt with Resume Context
                 let techKeywords = "Technical Interview: Java, Python, JavaScript, React, Spring Boot, Microservices, Kubernetes, Docker, AWS, Azure, SQL, NoSQL, System Design, Scalability, CI/CD, Maven, Gradle, REST API, GraphQL, Redis, Kafka, Distributed Systems, Algorithms, Data Structures.";
 
                 if (session.getResumeContext()) {
@@ -357,51 +354,53 @@ async function transcribeAudioWithWhisper(userId, audioBuffer) {
                 const safePrompt = techKeywords.substring(0, 800);
 
                 const groq = new Groq({ apiKey: randomKey, dangerouslyAllowBrowser: true });
-                console.log(`[Groq Whisper] Requesting transcription using LARGE-V3 (Max Accuracy)...`);
+                // console.log(`[Groq Whisper] Requesting transcription...`);
 
                 const transcription = await groq.audio.transcriptions.create({
                     file: fs.createReadStream(tempFile),
                     model: 'whisper-large-v3-turbo', // Optimized: Turbo for Speed + Prompt for Accuracy
-                    language: 'en',
-                    response_format: 'json',
+                    // ERROR FIX: Remove language='en' to allow detection, or strictly enforce it?
+                    // User wants to SKIP other languages. If we force 'en', Whisper might translate.
+                    // Better to let it detect, debugging language, then filter.
+                    response_format: 'verbose_json', // Needed to get language field
                     temperature: 0.0,
                     prompt: safePrompt,
                 });
 
-                transcriptionText = transcription.text;
-                console.log('Groq Transcription Success:', transcriptionText);
+                result.text = transcription.text;
+                result.language = transcription.language;
 
-                // Send User's Transcription to UI immediately
-                // sendToRenderer('update-transcription', transcriptionText); // Disabled: Remove blue UI per user request
+                // console.log(`Groq Transcription: "${result.text}" (Lang: ${result.language})`);
+
             } catch (groqError) {
                 console.error(`❌ Groq Whisper FAILED: ${groqError.message}`);
-                console.error(JSON.stringify(groqError, null, 2));
                 // Fallthrough to OpenAI if available
             }
         }
 
         // 2. Try OpenAI Whisper (Paid) - Priority 2 (Fallback)
-        if (!transcriptionText && openaiClient) {
+        if (!result.text && openaiClient) {
             console.log('Falling back to OpenAI Whisper...');
             const transcription = await openaiClient.audio.transcriptions.create({
                 file: fs.createReadStream(tempFile),
                 model: 'whisper-1',
-                language: 'en',
-                prompt: 'Programming interview: Java, Python, JavaScript, React, database, SQL, API, algorithm, data structure, object-oriented, frontend, backend, microservices, Docker, Kubernetes',
+                response_format: 'verbose_json',
+                prompt: 'Programming interview: Java, Python, JavaScript, React, database, SQL, API, algorithm, data structure, object-oriented, frontend, backend',
             });
-            transcriptionText = transcription.text;
+            result.text = transcription.text;
+            result.language = transcription.language;
         }
 
         // Clean up temp file
         try { fs.unlinkSync(tempFile); } catch (e) { }
 
         session.isTranscribing = false;
-        return transcriptionText || '';
+        return result;
 
     } catch (error) {
         console.error('Error transcribing audio:', error);
         session.isTranscribing = false;
-        return '';
+        return null; // Return null on error
     }
 }
 
@@ -477,6 +476,12 @@ async function sendMessageToGroq(userId, userMessage) {
     if (!session) {
         console.error(`[Groq] No session found for user ${userId.substring(0, 8)}...`);
         sendToRenderer('update-status', 'Error: Session not initialized');
+        return false;
+    }
+
+    // CHECK STOP FLAG: If user stopped listening, don't even start generating
+    if (session.ignorePendingResults) {
+        console.log(`[Groq] Aborting generation request - Session Stopped.`);
         return false;
     }
 
@@ -584,7 +589,22 @@ async function sendMessageToGroq(userId, userMessage) {
             const stream = await Promise.race([completionPromise, timeoutPromise]);
             session.currentStream = stream;
 
+            // CHECK STOP FLAG: If user stopped while waiting for response
+            if (session.ignorePendingResults) {
+                console.log(`[Groq] Aborting stream processing - Session Stopped during latency wait.`);
+                // Try to abort if possible
+                if (stream && stream.controller) try { stream.controller.abort(); } catch (e) { }
+                session.setGenerating(false);
+                return;
+            }
+
             for await (const chunk of stream) {
+                // CHECK STOP FLAG: If user stopped during stream
+                if (session.ignorePendingResults) {
+                    console.log(`[Groq] Aborting stream loop - Session Stopped.`);
+                    session.setGenerating(false);
+                    return;
+                }
                 const content = chunk.choices[0]?.delta?.content || '';
                 if (content) {
                     session.messageBuffer += content;
@@ -598,6 +618,14 @@ async function sendMessageToGroq(userId, userMessage) {
             console.log(`Groq Latency: ${responseTimeSeconds}s | Length: ${session.messageBuffer.length}`);
 
             const finalResponse = `${session.messageBuffer}\n\n*[Response Time: ${responseTimeSeconds}s]*`;
+
+            // FINAL CHECK: Don't update UI if stopped at the very end
+            if (session.ignorePendingResults) {
+                console.log(`[Groq] Discarding final response - Session Stopped.`);
+                session.setGenerating(false);
+                return;
+            }
+
             sendToRenderer('update-response', finalResponse);
 
             if (userMessage && session.messageBuffer) {
@@ -643,6 +671,12 @@ async function sendMessageToOpenAI(userId, userMessage) {
     if (!session) {
         console.error(`[OpenAI] No session found for user ${userId.substring(0, 8)}...`);
         sendToRenderer('update-status', 'Error: Session not initialized');
+        return;
+    }
+
+    // CHECK STOP FLAG: If user stopped listening
+    if (session.ignorePendingResults) {
+        console.log(`[OpenAI] Aborting generation request - Session Stopped.`);
         return;
     }
 
@@ -708,6 +742,11 @@ async function sendMessageToOpenAI(userId, userMessage) {
         session.currentStream = completion;
 
         for await (const chunk of completion) {
+            // CHECK STOP FLAG: If user stopped during stream
+            if (session.ignorePendingResults) {
+                console.log(`[OpenAI] Aborting stream loop - Session Stopped.`);
+                return;
+            }
             const content = chunk.choices[0]?.delta?.content || '';
             if (content) {
                 session.messageBuffer += content;
@@ -924,11 +963,30 @@ async function processAudioBuffer(userId) {
         return;
     }
 
-    // Transcribe audio with Whisper
-    const transcription = await transcribeAudioWithWhisper(userId, combinedBuffer);
+    // Check if stopped before even starting transcription
+    if (session.ignorePendingResults) {
+        console.log(`[${userId.substring(0, 5)}] Ignored pending audio buffer because session was stopped.`);
+        session.receivedAudioBuffer = [];
+        return;
+    }
 
-    if (transcription && transcription.trim().length > 0) {
-        const text = transcription.trim();
+    // Transcribe audio with Whisper
+    const result = await transcribeAudioWithWhisper(userId, combinedBuffer);
+
+    // CRITICAL FIX: Check if "Stop Listening" was clicked during transcription
+    if (session.ignorePendingResults) {
+        console.log(`[${userId.substring(0, 5)}] Discarding transcription result because session was stopped during processing.`);
+        return;
+    }
+
+    if (result && result.text && result.text.trim().length > 0) {
+        // LANGUAGE FILTER: Only allow English (en)
+        if (result.language && !result.language.toLowerCase().startsWith('en')) {
+            console.log(`[${userId.substring(0, 5)}] Filtered non-English input: "${result.text}" (Detected: ${result.language})`);
+            return;
+        }
+
+        const text = result.text.trim();
         const lowerText = text.toLowerCase().replace(/[.,!?;]$/, "");
         const wordCount = text.split(/\s+/).length;
 
@@ -984,14 +1042,14 @@ async function processAudioBuffer(userId) {
             }
         }
 
-        console.log('Audio transcribed:', transcription);
+        console.log('Audio transcribed:', result.text, '(Lang:', result.language, ')');
         session.lastSentTranscription = text;
         session.lastSentTimestamp = now;
 
         // Send to OpenAI for response (using automatic userId)
-        await sendMessageToOpenAI(userId, transcription);
+        await sendMessageToOpenAI(userId, result.text);
     } else {
-        console.log(`[Audio Processing] Transcription returned empty (Silence or Error). Length: ${transcription ? transcription.length : 0}`);
+        console.log(`[Audio Processing] Transcription returned empty (Silence or Error). Length: ${result ? result.text.length : 0}`);
     }
 }
 
@@ -1045,6 +1103,10 @@ function setupOpenAIIpcHandlers(sessionRef) {
 
             // Accumulate audio chunks in session
             session.receivedAudioBuffer.push(audioBuffer);
+
+            // STRICT MODE: Do NOT auto-reset ignorePendingResults on new audio
+            // The frontend MUST call 'start-listening' to reset this flag.
+            // If we receive audio while flag is true, we just drop it (logic above already handles this return).
 
             // ADJUSTMENT: Chunks are now 0.25s for faster response
             const MIN_CHUNKS = 4; // 1 second minimum (4 * 0.25s)
@@ -1423,7 +1485,22 @@ CRITICAL INSTRUCTIONS:
             console.log(`[${session.userId.substring(0, 5)}] Updated screenshot response style to:`, style);
             return true;
         }
-        return false;
+        return { success: true };
+    });
+
+    ipcMain.handle('start-listening', (event, { userId } = {}) => {
+        const resolvedUserId = userId || getMachineId();
+        const session = getOrCreateSession(resolvedUserId);
+        session.ignorePendingResults = false; // EXPLICIT START
+        console.log(`[SessionManager] Start Listening triggered for user ${resolvedUserId.substring(0, 8)}... (Flags Reset)`);
+        return { success: true };
+    });
+
+    ipcMain.handle('stop-processing', (event, { userId } = {}) => {
+        const resolvedUserId = userId || getMachineId();
+        const session = getOrCreateSession(resolvedUserId);
+        session.stopProcessing();
+        return { success: true };
     });
 
     ipcMain.handle('set-manual-mode', (event, { userId, enabled }) => {

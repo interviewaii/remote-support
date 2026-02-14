@@ -181,6 +181,9 @@ async function startCapture(screenshotIntervalSeconds = 2, imageQuality = 'mediu
     tokenTracker.reset();
     console.log('🎯 Token tracker reset for new capture session');
 
+    // EXPLICIT START SIGNAL: Reset backend flags
+    ipcRenderer.invoke('start-listening').catch(err => console.error('Error starting listening:', err));
+
     try {
         console.log('🎤 [DEBUG] Platform detected:', process.platform);
         if (isMacOS) {
@@ -690,6 +693,11 @@ function stopCapture() {
             console.error('Error stopping macOS audio:', err);
         });
     }
+
+    // IMMEDIATE STOP: Clear all backend buffers and pending processing
+    ipcRenderer.invoke('stop-processing').catch(err => {
+        console.error('Error invoking stop-processing:', err);
+    });
 
     // Clean up hidden elements
     if (hiddenVideo) {

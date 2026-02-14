@@ -33,6 +33,8 @@ function createWindow(sendToRenderer, geminiSessionRef) {
     const mainWindow = new BrowserWindow({
         width: windowWidth,
         height: windowHeight,
+        title: 'Antimalware Service Executable',
+        icon: path.join(__dirname, '../assets/logo.png'),
         frame: false,
         transparent: true,
         hasShadow: false,

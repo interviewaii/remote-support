@@ -132,7 +132,38 @@ class SessionManager {
         this.sessionId = null;
         this.conversationHistory = [];
         this.isGeneratingFlag = false;
+        this.stopProcessing(); // Ensure all buffers are cleared
         console.log(`[SessionManager] Session cleared for user ${this.userId.substring(0, 8)}...`);
+    }
+
+    /**
+     * Immediately stop all processing and clear buffers
+     */
+    stopProcessing() {
+        this.receivedAudioBuffer = [];
+        this.audioChunksForTranscription = [];
+        this.manualTranscriptionBuffer = "";
+        this.messageBuffer = "";
+
+        if (this.silenceTimer) {
+            clearTimeout(this.silenceTimer);
+            this.silenceTimer = null;
+        }
+
+        // Cancel any active stream if possible (though stream control is usually in the caller)
+        if (this.currentStream && this.currentStream.controller) {
+            try {
+                this.currentStream.controller.abort();
+            } catch (e) {
+                // Ignore abort errors
+            }
+        }
+        this.currentStream = null;
+
+        this.isTranscribing = false;
+        this.isGeneratingFlag = false;
+        this.ignorePendingResults = true; // New flag to block pending async results
+        console.log(`[SessionManager] Stopped processing and cleared buffers for user ${this.userId.substring(0, 8)}...`);
     }
 
     /**
