@@ -359,9 +359,7 @@ async function transcribeAudioWithWhisper(userId, audioBuffer) {
                 const transcription = await groq.audio.transcriptions.create({
                     file: fs.createReadStream(tempFile),
                     model: 'whisper-large-v3-turbo', // Optimized: Turbo for Speed + Prompt for Accuracy
-                    // ERROR FIX: Remove language='en' to allow detection, or strictly enforce it?
-                    // User wants to SKIP other languages. If we force 'en', Whisper might translate.
-                    // Better to let it detect, debugging language, then filter.
+                    language: 'en', // FORCE ENGLISH: Prevents hallucinating Icelandic/Welsh on short audio
                     response_format: 'verbose_json', // Needed to get language field
                     temperature: 0.0,
                     prompt: safePrompt,
@@ -980,10 +978,10 @@ async function processAudioBuffer(userId) {
     }
 
     if (result && result.text && result.text.trim().length > 0) {
-        // LANGUAGE FILTER: Only allow English (en)
+        // LANGUAGE FILTER: Warn but Allow (Relaxed)
         if (result.language && !result.language.toLowerCase().startsWith('en')) {
-            console.log(`[${userId.substring(0, 5)}] Filtered non-English input: "${result.text}" (Detected: ${result.language})`);
-            return;
+            console.warn(`[${userId.substring(0, 5)}] Non-English detected: "${result.text}" (Detected: ${result.language}) - Allowing anyway.`);
+            // return; // DISABLED: Allow all languages to prevent false positives
         }
 
         const text = result.text.trim();
@@ -1008,14 +1006,14 @@ async function processAudioBuffer(userId) {
         ];
 
         // 2. Question/Relevance Triggers (Keywords that imply a valid query)
-        const validQuestionTriggers = /^(what|how|why|when|who|where|explain|define|describe|code|write|create|compare|difference|solve|fix|debug|optimize|tell|can|could|would|is|are|do|does|did|show|list|give)\b/i;
+        const validQuestionTriggers = /^(what|what's|how|why|when|who|where|explain|define|describe|code|write|create|compare|difference|solve|fix|debug|optimize|tell|can|could|would|is|are|do|does|did|show|list|give|solution|which)\b/i;
 
         // 3. Tech Keywords (Allow these even if single words)
         const validTechKeywords = /^(java|python|react|node|javascript|sql|nosql|docker|kubernetes|aws|azure|spring|api|rest|graphql|redux|html|css|algorithm|structure|system|design|database|linux|git|agile|scrum|testing|jest|junit|maven|gradle|jenkins|devops|cloud|microservices|frontend|backend|fullstack|net|c#|cpp|security|performance|scaling|caching|redis|kafka|mongodb|postgres|mysql|oracle)\b/i;
 
         // OPTIMIZED NOISE FILTER:
-        // Rule 1: Ignore very short inputs (under 4 words) UNLESS they start with a valid question trigger OR are a tech keyword
-        if (wordCount < 4 && !validQuestionTriggers.test(lowerText) && !validTechKeywords.test(lowerText)) {
+        // Rule 1: Ignore very short inputs (under 2 words) UNLESS they start with a valid question trigger OR are a tech keyword
+        if (wordCount < 2 && !validQuestionTriggers.test(lowerText) && !validTechKeywords.test(lowerText)) {
             console.log(`Filtered short noise (No trigger/keyword): "${text}"`);
             return;
         }
@@ -1265,6 +1263,7 @@ function setupOpenAIIpcHandlers(sessionRef) {
 
             // Add Exam Instructions for High Quality or Code-focused styles
             let finalPrompt = analysisPrompt;
+            /* DISABLED: User requested to remove generic instructions to follow specific prompt format
             if (isHighQuality || session.screenshotResponseStyle === 'code_only' || session.screenshotResponseStyle === 'approach_solution') {
                 finalPrompt += `
 CRITICAL INSTRUCTIONS:
@@ -1274,6 +1273,7 @@ CRITICAL INSTRUCTIONS:
 4. If this is a LeetCode/HackerRank problem, provide the EXACT solution code that passes all hidden tests.
 5. Do not output markdown code blocks inside other blocks. Keep it clean.`;
             }
+            */
 
             // DYNAMIC CONTEXT INJECTION
             if (session.getResumeContext()) {

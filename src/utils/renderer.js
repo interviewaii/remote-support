@@ -598,47 +598,29 @@ async function captureManualScreenshot(imageQuality = null) {
     const selectedProfile = localStorage.getItem('selectedProfile') || 'interview';
     let analysisPrompt;
 
-    if (selectedProfile === 'coding') {
-        // Coding Interview - Structured, Solution Approach
-        analysisPrompt = `Analyze this screenshot and identify the technical question (Coding, System Design, GenAI, or Architecture). Provide a structured solution approach:
-
-**1. Problem Identification:**
-- Identify the core problem or concept (e.g., LeetCode, GenAI Architecture, API Design).
-- Mention constraints or key requirements.
-
-**2. Approach & Logic:**
-- Explain the logic/architecture step-by-step.
-- For System Design/GenAI: Explain the workflow, components, or strategy.
-- For Coding: Discuss algorithms and complexity.
-
-**3. Solution Code / Implementation:**
-- Provide the complete code, configuration, or structural implementation.
-- For GenAI/Architecture: Provide code snippets (e.g., Python/FastAPI), API schemas, or implementation steps.
-- Use clean, commented code.
-
-**4. Explanation:**
-- Briefly explain how the solution works or why this architecture is chosen.
-
-**Response Format:**
-- You MUST use the headings: **1. Problem**, **2. Approach**, **3. Code**, **4. Explanation**.
-- Be concise but complete.
-- Go straight to the solution.`;
+    if (selectedProfile === 'student') {
+        // STUDENT MODE: Direct Code + Output ONLY
+        analysisPrompt = `Analyze this technical question.
+Provide ONLY:
+1. **Complete Code Solution** (correct, efficient, handling edge cases).
+2. **Expected Output** (for the provided example or a standard test case).
+DO NOT provide explanations, theory, or summaries. Code and Output ONLY.`;
+    } else if (selectedProfile === 'coding') {
+        // CODING INTERVIEW MODE: Structured Approach
+        analysisPrompt = `Analyze this technical question.
+Provide:
+1. **Problem Analysis** (Brief constrains/edge cases).
+2. **Approach** (Logic/Algorithm).
+3. **Code Solution** (Clean, commented).
+4. **Time/Space Complexity**.`;
     } else {
-        // Normal/Job Interview - Direct, Confident, Human-like
-        analysisPrompt = `Analyze this screenshot and identify the interview question. Provide a direct, confident answer as if you are the candidate.
-
-**Structure:**
-1. **Direct Answer:** Start immediately with the core answer or definition.
-2. **Key Concepts:** Briefly mention 2-3 key points (e.g., "Virtual DOM", "Diffing", "State vs Props") if applicable.
-3. **Comparison (if needed):** Use a quick "vs" comparison for difference-type questions.
-
-**Tone:**
-- Confident, professional, but human.
-- Avoid robotic intros like "Here is the answer".
-- Be concise (aim for < 100 words unless complex).
-
-**Example Style:**
-"React is a library for building UIs... it uses a Virtual DOM to improve performance..."`;
+        // STANDARD INTERVIEW MODE (Default): Code + Summary + Output
+        analysisPrompt = `Analyze this technical question/screenshot.
+Provide:
+1. **Direct Answer / Code Solution**: The core answer or complete code.
+2. **Brief Summary**: Explain the approach/concept concisely (2-3 sentences).
+3. **Output/Example**: Show the expected result or a usage example.
+Keep the tone confident and professional.`;
     }
 
     try {
